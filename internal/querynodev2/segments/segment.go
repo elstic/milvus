@@ -31,7 +31,6 @@ import (
 	"io"
 	"strconv"
 	"strings"
-	"sync"
 	"unsafe"
 
 	"github.com/apache/arrow/go/v12/arrow/array"
@@ -50,6 +49,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/proto/segcorepb"
 	"github.com/milvus-io/milvus/internal/querynodev2/pkoracle"
+	"github.com/milvus-io/milvus/internal/querynodev2/segments/state"
 	"github.com/milvus-io/milvus/internal/storage"
 	typeutil_internal "github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/milvus-io/milvus/pkg/common"
@@ -74,6 +74,7 @@ var ErrSegmentUnhealthy = errors.New("segment unhealthy")
 type IndexedFieldInfo struct {
 	FieldBinlog *datapb.FieldBinlog
 	IndexInfo   *querypb.FieldIndexInfo
+	LazyLoad    bool
 }
 
 type baseSegment struct {
@@ -88,6 +89,7 @@ type baseSegment struct {
 	segmentType    SegmentType
 	bloomFilterSet *pkoracle.BloomFilterSet
 	loadInfo       *querypb.SegmentLoadInfo
+	isLazyLoad     bool
 
 	resourceUsageCache *atomic.Pointer[ResourceUsage]
 }
@@ -116,6 +118,14 @@ func (s *baseSegment) Collection() int64 {
 
 func (s *baseSegment) Partition() int64 {
 	return s.loadInfo.GetPartitionID()
+}
+
+func (s *baseSegment) DatabaseName() string {
+	return s.collection.GetDBName()
+}
+
+func (s *baseSegment) ResourceGroup() string {
+	return s.collection.GetResourceGroup()
 }
 
 func (s *baseSegment) Shard() string {
@@ -191,6 +201,8 @@ func (s *baseSegment) ResourceUsageEstimate() ResourceUsage {
 	return *usage
 }
 
+func (s *baseSegment) IsLazyLoad() bool { return s.isLazyLoad }
+
 type FieldInfo struct {
 	datapb.FieldBinlog
 	RowCount int64
@@ -201,7 +213,7 @@ var _ Segment = (*LocalSegment)(nil)
 // Segment is a wrapper of the underlying C-structure segment.
 type LocalSegment struct {
 	baseSegment
-	ptrLock sync.RWMutex // protects segmentPtr
+	ptrLock *state.LoadStateLock
 	ptr     C.CSegmentInterface
 
 	// cached results, to avoid too many CGO calls
@@ -230,10 +242,13 @@ func NewSegment(ctx context.Context,
 		return NewL0Segment(collection, segmentType, version, loadInfo)
 	}
 	var cSegType C.SegmentType
+	var locker *state.LoadStateLock
 	switch segmentType {
 	case SegmentTypeSealed:
 		cSegType = C.Sealed
+		locker = state.NewLoadStateLock(state.LoadStateOnlyMeta)
 	case SegmentTypeGrowing:
+		locker = state.NewLoadStateLock(state.LoadStateDataLoaded)
 		cSegType = C.Growing
 	default:
 		return nil, fmt.Errorf("illegal segment type %d when create segment %d", segmentType, loadInfo.GetSegmentID())
@@ -263,6 +278,7 @@ func NewSegment(ctx context.Context,
 
 	segment := &LocalSegment{
 		baseSegment:        newBaseSegment(collection, segmentType, version, loadInfo),
+		ptrLock:            locker,
 		ptr:                newPtr,
 		lastDeltaTimestamp: atomic.NewUint64(0),
 		fields:             typeutil.NewConcurrentMap[int64, *FieldInfo](),
@@ -296,11 +312,14 @@ func NewSegmentV2(
 	}
 	var segmentPtr C.CSegmentInterface
 	var status C.CStatus
+	var locker *state.LoadStateLock
 	switch segmentType {
 	case SegmentTypeSealed:
 		status = C.NewSegment(collection.collectionPtr, C.Sealed, C.int64_t(loadInfo.GetSegmentID()), &segmentPtr)
+		locker = state.NewLoadStateLock(state.LoadStateOnlyMeta)
 	case SegmentTypeGrowing:
 		status = C.NewSegment(collection.collectionPtr, C.Growing, C.int64_t(loadInfo.GetSegmentID()), &segmentPtr)
+		locker = state.NewLoadStateLock(state.LoadStateDataLoaded)
 	default:
 		return nil, fmt.Errorf("illegal segment type %d when create segment %d", segmentType, loadInfo.GetSegmentID())
 	}
@@ -326,6 +345,7 @@ func NewSegmentV2(
 
 	segment := &LocalSegment{
 		baseSegment:        newBaseSegment(collection, segmentType, version, loadInfo),
+		ptrLock:            locker,
 		ptr:                segmentPtr,
 		lastDeltaTimestamp: atomic.NewUint64(0),
 		fields:             typeutil.NewConcurrentMap[int64, *FieldInfo](),
@@ -343,41 +363,31 @@ func NewSegmentV2(
 	return segment, nil
 }
 
-func (s *LocalSegment) isValid() bool {
-	return s.ptr != nil
-}
-
-// RLock acquires the `ptrLock` and returns true if the pointer is valid
+// PinIfNotReleased acquires the `ptrLock` and returns true if the pointer is valid
 // Provide ONLY the read lock operations,
 // don't make `ptrLock` public to avoid abusing of the mutex.
-func (s *LocalSegment) RLock() error {
-	s.ptrLock.RLock()
-	if !s.isValid() {
-		s.ptrLock.RUnlock()
+func (s *LocalSegment) PinIfNotReleased() error {
+	if !s.ptrLock.PinIfNotReleased() {
 		return merr.WrapErrSegmentNotLoaded(s.ID(), "segment released")
 	}
 	return nil
 }
 
-func (s *LocalSegment) RUnlock() {
-	s.ptrLock.RUnlock()
+func (s *LocalSegment) Unpin() {
+	s.ptrLock.Unpin()
 }
 
 func (s *LocalSegment) InsertCount() int64 {
-	s.ptrLock.RLock()
-	defer s.ptrLock.RUnlock()
-
 	return s.insertCount.Load()
 }
 
 func (s *LocalSegment) RowNum() int64 {
-	s.ptrLock.RLock()
-	defer s.ptrLock.RUnlock()
-
-	if !s.isValid() {
+	// if segment is not loaded, return 0 (maybe not loaded or release by lru)
+	if !s.ptrLock.RLockIf(state.IsDataLoaded) {
 		log.Warn("segment is not valid", zap.Int64("segmentID", s.ID()))
 		return 0
 	}
+	defer s.ptrLock.RUnlock()
 
 	rowNum := s.rowNum.Load()
 	if rowNum < 0 {
@@ -394,12 +404,10 @@ func (s *LocalSegment) RowNum() int64 {
 }
 
 func (s *LocalSegment) MemSize() int64 {
-	s.ptrLock.RLock()
-	defer s.ptrLock.RUnlock()
-
-	if !s.isValid() {
+	if !s.ptrLock.RLockIf(state.IsNotReleased) {
 		return 0
 	}
+	defer s.ptrLock.RUnlock()
 
 	memSize := s.memSize.Load()
 	if memSize < 0 {
@@ -437,11 +445,11 @@ func (s *LocalSegment) ExistIndex(fieldID int64) bool {
 }
 
 func (s *LocalSegment) HasRawData(fieldID int64) bool {
-	s.ptrLock.RLock()
-	defer s.ptrLock.RUnlock()
-	if !s.isValid() {
+	if !s.ptrLock.RLockIf(state.IsNotReleased) {
 		return false
 	}
+	defer s.ptrLock.RUnlock()
+
 	ret := C.HasRawData(s.ptr, C.int64_t(fieldID))
 	return bool(ret)
 }
@@ -453,6 +461,12 @@ func (s *LocalSegment) Indexes() []*IndexedFieldInfo {
 		return true
 	})
 	return result
+}
+
+func (s *LocalSegment) ResetIndexesLazyLoad(lazyState bool) {
+	for _, indexInfo := range s.Indexes() {
+		indexInfo.LazyLoad = lazyState
+	}
 }
 
 func (s *LocalSegment) Search(ctx context.Context, searchReq *SearchRequest) (*SearchResult, error) {
@@ -470,12 +484,11 @@ func (s *LocalSegment) Search(ctx context.Context, searchReq *SearchRequest) (*S
 		zap.Int64("segmentID", s.ID()),
 		zap.String("segmentType", s.segmentType.String()),
 	)
-	s.ptrLock.RLock()
-	defer s.ptrLock.RUnlock()
-
-	if s.ptr == nil {
+	if !s.ptrLock.RLockIf(state.IsNotReleased) {
+		// TODO: check if the segment is readable but not released. too many related logic need to be refactor.
 		return nil, merr.WrapErrSegmentNotLoaded(s.ID(), "segment released")
 	}
+	defer s.ptrLock.RUnlock()
 
 	traceCtx := ParseCTraceContext(ctx)
 
@@ -508,12 +521,11 @@ func (s *LocalSegment) Search(ctx context.Context, searchReq *SearchRequest) (*S
 }
 
 func (s *LocalSegment) Retrieve(ctx context.Context, plan *RetrievePlan) (*segcorepb.RetrieveResults, error) {
-	s.ptrLock.RLock()
-	defer s.ptrLock.RUnlock()
-
-	if s.ptr == nil {
+	if !s.ptrLock.RLockIf(state.IsNotReleased) {
+		// TODO: check if the segment is readable but not released. too many related logic need to be refactor.
 		return nil, merr.WrapErrSegmentNotLoaded(s.ID(), "segment released")
 	}
+	defer s.ptrLock.RUnlock()
 
 	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", s.Collection()),
@@ -604,13 +616,10 @@ func (s *LocalSegment) Insert(ctx context.Context, rowIDs []int64, timestamps []
 	if s.Type() != SegmentTypeGrowing {
 		return fmt.Errorf("unexpected segmentType when segmentInsert, segmentType = %s", s.segmentType.String())
 	}
-
-	s.ptrLock.RLock()
-	defer s.ptrLock.RUnlock()
-
-	if s.ptr == nil {
+	if !s.ptrLock.RLockIf(state.IsNotReleased) {
 		return merr.WrapErrSegmentNotLoaded(s.ID(), "segment released")
 	}
+	defer s.ptrLock.RUnlock()
 
 	offset, err := s.preInsert(ctx, len(rowIDs))
 	if err != nil {
@@ -625,7 +634,7 @@ func (s *LocalSegment) Insert(ctx context.Context, rowIDs []int64, timestamps []
 	numOfRow := len(rowIDs)
 	cOffset := C.int64_t(offset)
 	cNumOfRows := C.int64_t(numOfRow)
-	cEntityIdsPtr := (*C.int64_t)(&(rowIDs)[0])
+	cEntityIDsPtr := (*C.int64_t)(&(rowIDs)[0])
 	cTimestampsPtr := (*C.uint64_t)(&(timestamps)[0])
 
 	var status C.CStatus
@@ -634,7 +643,7 @@ func (s *LocalSegment) Insert(ctx context.Context, rowIDs []int64, timestamps []
 		status = C.Insert(s.ptr,
 			cOffset,
 			cNumOfRows,
-			cEntityIdsPtr,
+			cEntityIDsPtr,
 			cTimestampsPtr,
 			(*C.uint8_t)(unsafe.Pointer(&insertRecordBlob[0])),
 			(C.uint64_t)(len(insertRecordBlob)),
@@ -664,13 +673,10 @@ func (s *LocalSegment) Delete(ctx context.Context, primaryKeys []storage.Primary
 	if len(primaryKeys) == 0 {
 		return nil
 	}
-
-	s.ptrLock.RLock()
-	defer s.ptrLock.RUnlock()
-
-	if s.ptr == nil {
+	if !s.ptrLock.RLockIf(state.IsNotReleased) {
 		return merr.WrapErrSegmentNotLoaded(s.ID(), "segment released")
 	}
+	defer s.ptrLock.RUnlock()
 
 	cOffset := C.int64_t(0) // depre
 	cSize := C.int64_t(len(primaryKeys))
@@ -731,12 +737,10 @@ func (s *LocalSegment) Delete(ctx context.Context, primaryKeys []storage.Primary
 
 // -------------------------------------------------------------------------------------- interfaces for sealed segment
 func (s *LocalSegment) LoadMultiFieldData(ctx context.Context, rowCount int64, fields []*datapb.FieldBinlog) error {
-	s.ptrLock.RLock()
-	defer s.ptrLock.RUnlock()
-
-	if s.ptr == nil {
+	if !s.ptrLock.RLockIf(state.IsNotReleased) {
 		return merr.WrapErrSegmentNotLoaded(s.ID(), "segment released")
 	}
+	defer s.ptrLock.RUnlock()
 
 	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", s.Collection()),
@@ -835,15 +839,13 @@ func (s *LocalSegment) LoadFieldData(ctx context.Context, fieldID int64, rowCoun
 
 	s.loadStatus.Store(string(options.LoadStatus))
 
-	s.ptrLock.RLock()
+	if !s.ptrLock.RLockIf(state.IsNotReleased) {
+		return merr.WrapErrSegmentNotLoaded(s.ID(), "segment released")
+	}
 	defer s.ptrLock.RUnlock()
 
 	ctx, sp := otel.Tracer(typeutil.QueryNodeRole).Start(ctx, fmt.Sprintf("LoadFieldData-%d-%d", s.ID(), fieldID))
 	defer sp.End()
-
-	if s.ptr == nil {
-		return merr.WrapErrSegmentNotLoaded(s.ID(), "segment released")
-	}
 
 	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", s.Collection()),
@@ -999,12 +1001,10 @@ func (s *LocalSegment) LoadDeltaData2(ctx context.Context, schema *schemapb.Coll
 }
 
 func (s *LocalSegment) AddFieldDataInfo(ctx context.Context, rowCount int64, fields []*datapb.FieldBinlog) error {
-	s.ptrLock.RLock()
-	defer s.ptrLock.RUnlock()
-
-	if s.ptr == nil {
+	if !s.ptrLock.RLockIf(state.IsNotReleased) {
 		return merr.WrapErrSegmentNotLoaded(s.ID(), "segment released")
 	}
+	defer s.ptrLock.RUnlock()
 
 	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", s.Collection()),
@@ -1054,12 +1054,10 @@ func (s *LocalSegment) LoadDeltaData(ctx context.Context, deltaData *storage.Del
 	pks, tss := deltaData.Pks, deltaData.Tss
 	rowNum := deltaData.RowCount
 
-	s.ptrLock.RLock()
-	defer s.ptrLock.RUnlock()
-
-	if s.ptr == nil {
+	if !s.ptrLock.RLockIf(state.IsNotReleased) {
 		return merr.WrapErrSegmentNotLoaded(s.ID(), "segment released")
 	}
+	defer s.ptrLock.RUnlock()
 
 	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", s.Collection()),
@@ -1137,16 +1135,6 @@ func (s *LocalSegment) LoadIndex(ctx context.Context, indexInfo *querypb.FieldIn
 		opt(options)
 	}
 
-	old := s.GetIndex(indexInfo.GetFieldID())
-	// the index loaded
-	if old != nil && old.IndexInfo.GetIndexID() == indexInfo.GetIndexID() {
-		log.Warn("index already loaded")
-		return nil
-	}
-
-	ctx, sp := otel.Tracer(typeutil.QueryNodeRole).Start(ctx, fmt.Sprintf("LoadIndex-%d-%d", s.ID(), indexInfo.GetFieldID()))
-	defer sp.End()
-
 	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", s.Collection()),
 		zap.Int64("partitionID", s.Partition()),
@@ -1154,6 +1142,26 @@ func (s *LocalSegment) LoadIndex(ctx context.Context, indexInfo *querypb.FieldIn
 		zap.Int64("fieldID", indexInfo.GetFieldID()),
 		zap.Int64("indexID", indexInfo.GetIndexID()),
 	)
+
+	if options.LoadStatus == LoadStatusMeta {
+		s.addIndex(indexInfo.GetFieldID(), &IndexedFieldInfo{
+			FieldBinlog: &datapb.FieldBinlog{
+				FieldID: indexInfo.GetFieldID(),
+			},
+			IndexInfo: indexInfo,
+			LazyLoad:  true,
+		})
+		return nil
+	}
+	old := s.GetIndex(indexInfo.GetFieldID())
+	// the index loaded
+	if old != nil && old.IndexInfo.GetIndexID() == indexInfo.GetIndexID() && !old.LazyLoad {
+		log.Warn("index already loaded")
+		return nil
+	}
+
+	ctx, sp := otel.Tracer(typeutil.QueryNodeRole).Start(ctx, fmt.Sprintf("LoadIndex-%d-%d", s.ID(), indexInfo.GetFieldID()))
+	defer sp.End()
 
 	loadIndexInfo, err := newLoadIndexInfo(ctx)
 	if err != nil {
@@ -1202,12 +1210,10 @@ func (s *LocalSegment) UpdateIndexInfo(ctx context.Context, indexInfo *querypb.F
 		zap.Int64("segmentID", s.ID()),
 		zap.Int64("fieldID", indexInfo.FieldID),
 	)
-	s.ptrLock.RLock()
-	defer s.ptrLock.RUnlock()
-
-	if s.ptr == nil {
+	if !s.ptrLock.RLockIf(state.IsNotReleased) {
 		return merr.WrapErrSegmentNotLoaded(s.ID(), "segment released")
 	}
+	defer s.ptrLock.RUnlock()
 
 	var status C.CStatus
 	GetDynamicPool().Submit(func() (any, error) {
@@ -1228,6 +1234,7 @@ func (s *LocalSegment) UpdateIndexInfo(ctx context.Context, indexInfo *querypb.F
 			FieldID: indexInfo.GetFieldID(),
 		},
 		IndexInfo: indexInfo,
+		LazyLoad:  false,
 	})
 	log.Info("updateSegmentIndex done")
 	return nil
@@ -1240,12 +1247,10 @@ func (s *LocalSegment) WarmupChunkCache(ctx context.Context, fieldID int64) {
 		zap.Int64("segmentID", s.ID()),
 		zap.Int64("fieldID", fieldID),
 	)
-	s.ptrLock.RLock()
-	defer s.ptrLock.RUnlock()
-
-	if s.ptr == nil {
+	if !s.ptrLock.RLockIf(state.IsNotReleased) {
 		return
 	}
+	defer s.ptrLock.RUnlock()
 
 	var status C.CStatus
 
@@ -1264,11 +1269,11 @@ func (s *LocalSegment) WarmupChunkCache(ctx context.Context, fieldID int64) {
 		}).Await()
 	case "async":
 		GetLoadPool().Submit(func() (any, error) {
-			s.ptrLock.RLock()
-			defer s.ptrLock.RUnlock()
-			if s.ptr == nil {
+			if !s.ptrLock.RLockIf(state.IsNotReleased) {
 				return nil, nil
 			}
+			defer s.ptrLock.RUnlock()
+
 			cFieldID := C.int64_t(fieldID)
 			status = C.WarmupChunkCache(s.ptr, cFieldID)
 			if err := HandleCStatus(ctx, &status, ""); err != nil {
@@ -1334,33 +1339,34 @@ func (s *LocalSegment) Release(opts ...releaseOption) {
 	for _, opt := range opts {
 		opt(options)
 	}
-
-	/*
-		void
-		deleteSegment(CSegmentInterface segment);
-	*/
-	var ptr C.CSegmentInterface
-
-	// wait all read ops finished
-	s.ptrLock.Lock()
-	ptr = s.ptr
-	s.ptr = nil
-	if options.Scope == ReleaseScopeData {
-		s.loadStatus.Store(string(LoadStatusMeta))
-	}
-	s.ptrLock.Unlock()
-
-	if ptr == nil {
+	stateLockGuard := s.startRelease(options.Scope)
+	if stateLockGuard == nil { // release is already done.
 		return
 	}
+	// release will never fail
+	defer stateLockGuard.Done(nil)
+
+	log := log.With(zap.Int64("collectionID", s.Collection()),
+		zap.Int64("partitionID", s.Partition()),
+		zap.Int64("segmentID", s.ID()),
+		zap.String("segmentType", s.segmentType.String()),
+		zap.Int64("insertCount", s.InsertCount()),
+	)
+
+	// wait all read ops finished
+	ptr := s.ptr
 	if options.Scope == ReleaseScopeData {
+		s.loadStatus.Store(string(LoadStatusMeta))
 		C.ClearSegmentData(ptr)
+		s.ResetIndexesLazyLoad(true)
+		log.Debug("release segment data done and the field indexes info has been set lazy load=true")
 		return
 	}
 
 	C.DeleteSegment(ptr)
 
 	metrics.QueryNodeNumEntities.WithLabelValues(
+		s.DatabaseName(),
 		fmt.Sprint(paramtable.GetNodeID()),
 		fmt.Sprint(s.Collection()),
 		fmt.Sprint(s.Partition()),
@@ -1374,11 +1380,22 @@ func (s *LocalSegment) Release(opts ...releaseOption) {
 		metrics.QueryNodeDiskUsedSize.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Set(float64(localDiskUsage) / 1024 / 1024) // in MB
 	}
 
-	log.Info("delete segment from memory",
-		zap.Int64("collectionID", s.Collection()),
-		zap.Int64("partitionID", s.Partition()),
-		zap.Int64("segmentID", s.ID()),
-		zap.String("segmentType", s.segmentType.String()),
-		zap.Int64("insertCount", s.InsertCount()),
-	)
+	log.Info("delete segment from memory")
+}
+
+// StartLoadData starts the loading process of the segment.
+func (s *LocalSegment) StartLoadData() (state.LoadStateLockGuard, error) {
+	return s.ptrLock.StartLoadData()
+}
+
+// startRelease starts the releasing process of the segment.
+func (s *LocalSegment) startRelease(scope ReleaseScope) state.LoadStateLockGuard {
+	switch scope {
+	case ReleaseScopeData:
+		return s.ptrLock.StartReleaseData()
+	case ReleaseScopeAll:
+		return s.ptrLock.StartReleaseAll()
+	default:
+		panic(fmt.Sprintf("unexpected release scope %d", scope))
+	}
 }

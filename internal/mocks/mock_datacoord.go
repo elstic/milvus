@@ -1961,61 +1961,6 @@ func (_c *MockDataCoord_GetTimeTickChannel_Call) RunAndReturn(run func(context.C
 	return _c
 }
 
-// Import provides a mock function with given fields: _a0, _a1
-func (_m *MockDataCoord) Import(_a0 context.Context, _a1 *datapb.ImportTaskRequest) (*datapb.ImportTaskResponse, error) {
-	ret := _m.Called(_a0, _a1)
-
-	var r0 *datapb.ImportTaskResponse
-	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, *datapb.ImportTaskRequest) (*datapb.ImportTaskResponse, error)); ok {
-		return rf(_a0, _a1)
-	}
-	if rf, ok := ret.Get(0).(func(context.Context, *datapb.ImportTaskRequest) *datapb.ImportTaskResponse); ok {
-		r0 = rf(_a0, _a1)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*datapb.ImportTaskResponse)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(context.Context, *datapb.ImportTaskRequest) error); ok {
-		r1 = rf(_a0, _a1)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// MockDataCoord_Import_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Import'
-type MockDataCoord_Import_Call struct {
-	*mock.Call
-}
-
-// Import is a helper method to define mock.On call
-//   - _a0 context.Context
-//   - _a1 *datapb.ImportTaskRequest
-func (_e *MockDataCoord_Expecter) Import(_a0 interface{}, _a1 interface{}) *MockDataCoord_Import_Call {
-	return &MockDataCoord_Import_Call{Call: _e.mock.On("Import", _a0, _a1)}
-}
-
-func (_c *MockDataCoord_Import_Call) Run(run func(_a0 context.Context, _a1 *datapb.ImportTaskRequest)) *MockDataCoord_Import_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(*datapb.ImportTaskRequest))
-	})
-	return _c
-}
-
-func (_c *MockDataCoord_Import_Call) Return(_a0 *datapb.ImportTaskResponse, _a1 error) *MockDataCoord_Import_Call {
-	_c.Call.Return(_a0, _a1)
-	return _c
-}
-
-func (_c *MockDataCoord_Import_Call) RunAndReturn(run func(context.Context, *datapb.ImportTaskRequest) (*datapb.ImportTaskResponse, error)) *MockDataCoord_Import_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
 // ImportV2 provides a mock function with given fields: _a0, _a1
 func (_m *MockDataCoord) ImportV2(_a0 context.Context, _a1 *internalpb.ImportRequestInternal) (*internalpb.ImportResponse, error) {
 	ret := _m.Called(_a0, _a1)
@@ -2483,61 +2428,6 @@ func (_c *MockDataCoord_SaveBinlogPaths_Call) RunAndReturn(run func(context.Cont
 	return _c
 }
 
-// SaveImportSegment provides a mock function with given fields: _a0, _a1
-func (_m *MockDataCoord) SaveImportSegment(_a0 context.Context, _a1 *datapb.SaveImportSegmentRequest) (*commonpb.Status, error) {
-	ret := _m.Called(_a0, _a1)
-
-	var r0 *commonpb.Status
-	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, *datapb.SaveImportSegmentRequest) (*commonpb.Status, error)); ok {
-		return rf(_a0, _a1)
-	}
-	if rf, ok := ret.Get(0).(func(context.Context, *datapb.SaveImportSegmentRequest) *commonpb.Status); ok {
-		r0 = rf(_a0, _a1)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*commonpb.Status)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(context.Context, *datapb.SaveImportSegmentRequest) error); ok {
-		r1 = rf(_a0, _a1)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// MockDataCoord_SaveImportSegment_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SaveImportSegment'
-type MockDataCoord_SaveImportSegment_Call struct {
-	*mock.Call
-}
-
-// SaveImportSegment is a helper method to define mock.On call
-//   - _a0 context.Context
-//   - _a1 *datapb.SaveImportSegmentRequest
-func (_e *MockDataCoord_Expecter) SaveImportSegment(_a0 interface{}, _a1 interface{}) *MockDataCoord_SaveImportSegment_Call {
-	return &MockDataCoord_SaveImportSegment_Call{Call: _e.mock.On("SaveImportSegment", _a0, _a1)}
-}
-
-func (_c *MockDataCoord_SaveImportSegment_Call) Run(run func(_a0 context.Context, _a1 *datapb.SaveImportSegmentRequest)) *MockDataCoord_SaveImportSegment_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(*datapb.SaveImportSegmentRequest))
-	})
-	return _c
-}
-
-func (_c *MockDataCoord_SaveImportSegment_Call) Return(_a0 *commonpb.Status, _a1 error) *MockDataCoord_SaveImportSegment_Call {
-	_c.Call.Return(_a0, _a1)
-	return _c
-}
-
-func (_c *MockDataCoord_SaveImportSegment_Call) RunAndReturn(run func(context.Context, *datapb.SaveImportSegmentRequest) (*commonpb.Status, error)) *MockDataCoord_SaveImportSegment_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
 // SetAddress provides a mock function with given fields: address
 func (_m *MockDataCoord) SetAddress(address string) {
 	_m.Called(address)
@@ -2924,61 +2814,6 @@ func (_c *MockDataCoord_Stop_Call) Return(_a0 error) *MockDataCoord_Stop_Call {
 }
 
 func (_c *MockDataCoord_Stop_Call) RunAndReturn(run func() error) *MockDataCoord_Stop_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
-// UnsetIsImportingState provides a mock function with given fields: _a0, _a1
-func (_m *MockDataCoord) UnsetIsImportingState(_a0 context.Context, _a1 *datapb.UnsetIsImportingStateRequest) (*commonpb.Status, error) {
-	ret := _m.Called(_a0, _a1)
-
-	var r0 *commonpb.Status
-	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, *datapb.UnsetIsImportingStateRequest) (*commonpb.Status, error)); ok {
-		return rf(_a0, _a1)
-	}
-	if rf, ok := ret.Get(0).(func(context.Context, *datapb.UnsetIsImportingStateRequest) *commonpb.Status); ok {
-		r0 = rf(_a0, _a1)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*commonpb.Status)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(context.Context, *datapb.UnsetIsImportingStateRequest) error); ok {
-		r1 = rf(_a0, _a1)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// MockDataCoord_UnsetIsImportingState_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'UnsetIsImportingState'
-type MockDataCoord_UnsetIsImportingState_Call struct {
-	*mock.Call
-}
-
-// UnsetIsImportingState is a helper method to define mock.On call
-//   - _a0 context.Context
-//   - _a1 *datapb.UnsetIsImportingStateRequest
-func (_e *MockDataCoord_Expecter) UnsetIsImportingState(_a0 interface{}, _a1 interface{}) *MockDataCoord_UnsetIsImportingState_Call {
-	return &MockDataCoord_UnsetIsImportingState_Call{Call: _e.mock.On("UnsetIsImportingState", _a0, _a1)}
-}
-
-func (_c *MockDataCoord_UnsetIsImportingState_Call) Run(run func(_a0 context.Context, _a1 *datapb.UnsetIsImportingStateRequest)) *MockDataCoord_UnsetIsImportingState_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(*datapb.UnsetIsImportingStateRequest))
-	})
-	return _c
-}
-
-func (_c *MockDataCoord_UnsetIsImportingState_Call) Return(_a0 *commonpb.Status, _a1 error) *MockDataCoord_UnsetIsImportingState_Call {
-	_c.Call.Return(_a0, _a1)
-	return _c
-}
-
-func (_c *MockDataCoord_UnsetIsImportingState_Call) RunAndReturn(run func(context.Context, *datapb.UnsetIsImportingStateRequest) (*commonpb.Status, error)) *MockDataCoord_UnsetIsImportingState_Call {
 	_c.Call.Return(run)
 	return _c
 }

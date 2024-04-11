@@ -59,6 +59,9 @@ const (
 	// InvalidPartitionID indicates that the partition is not specified. It will be set when the partitionName is empty
 	InvalidPartitionID = int64(-1)
 
+	// AllPartitionsID indicates data applies to all partitions.
+	AllPartitionsID = int64(-1)
+
 	// InvalidFieldID indicates that the field does not exist . It will be set when the field is not found.
 	InvalidFieldID = int64(-1)
 
@@ -85,6 +88,9 @@ const (
 
 	// SegmentIndexPath storage path const for segment index files.
 	SegmentIndexPath = `index_files`
+
+	// PartitionStatsPath storage path const for partition stats files
+	PartitionStatsPath = `part_stats`
 )
 
 // Search, Index parameter keys
@@ -102,6 +108,8 @@ const (
 	DimKey         = "dim"
 	MaxLengthKey   = "max_length"
 	MaxCapacityKey = "max_capacity"
+
+	DropRatioBuildKey = "drop_ratio_build"
 )
 
 //  Collection properties key
@@ -168,6 +176,15 @@ func FieldHasMmapKey(schema *schemapb.CollectionSchema, fieldID int64) bool {
 				}
 			}
 			return false
+		}
+	}
+	return false
+}
+
+func HasLazyload(props []*commonpb.KeyValuePair) bool {
+	for _, kv := range props {
+		if kv.Key == LazyLoadEnableKey {
+			return true
 		}
 	}
 	return false

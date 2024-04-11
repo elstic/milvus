@@ -21,6 +21,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/planpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/exprutil"
 	"github.com/milvus-io/milvus/pkg/common"
 	"github.com/milvus-io/milvus/pkg/log"
 	"github.com/milvus-io/milvus/pkg/mq/msgstream"
@@ -60,7 +61,8 @@ type deleteTask struct {
 	msgID UniqueID
 
 	// result
-	count int64
+	count       int64
+	allQueryCnt int64
 }
 
 func (dt *deleteTask) TraceCtx() context.Context {
@@ -245,6 +247,8 @@ type deleteRunner struct {
 
 	// task queue
 	queue *dmTaskQueue
+
+	allQueryCnt atomic.Int64
 }
 
 func (dr *deleteRunner) Init(ctx context.Context) error {
@@ -267,7 +271,7 @@ func (dr *deleteRunner) Init(ctx context.Context) error {
 
 	dr.partitionKeyMode = dr.schema.IsPartitionKeyCollection()
 	// get partitionIDs of delete
-	dr.partitionID = common.InvalidPartitionID
+	dr.partitionID = common.AllPartitionsID
 	if len(dr.req.PartitionName) > 0 {
 		if dr.partitionKeyMode {
 			return errors.New("not support manually specifying the partition names if partition key mode is used")
@@ -356,11 +360,11 @@ func (dr *deleteRunner) getStreamingQueryAndDelteFunc(plan *planpb.PlanNode) exe
 
 		// optimize query when partitionKey on
 		if dr.partitionKeyMode {
-			expr, err := ParseExprFromPlan(plan)
+			expr, err := exprutil.ParseExprFromPlan(plan)
 			if err != nil {
 				return err
 			}
-			partitionKeys := ParsePartitionKeys(expr)
+			partitionKeys := exprutil.ParseKeys(expr, exprutil.PartitionKey)
 			hashedPartitionNames, err := assignPartitionKeys(ctx, dr.req.GetDbName(), dr.req.GetCollectionName(), partitionKeys)
 			if err != nil {
 				return err
@@ -421,6 +425,7 @@ func (dr *deleteRunner) getStreamingQueryAndDelteFunc(plan *planpb.PlanNode) exe
 
 		taskCh := make(chan *deleteTask, 256)
 		go dr.receiveQueryResult(ctx, client, taskCh)
+		var allQueryCnt int64
 		// wait all task finish
 		for task := range taskCh {
 			err := task.WaitToFinish()
@@ -428,12 +433,14 @@ func (dr *deleteRunner) getStreamingQueryAndDelteFunc(plan *planpb.PlanNode) exe
 				return err
 			}
 			dr.count.Add(task.count)
+			allQueryCnt += task.allQueryCnt
 		}
 
 		// query or produce task failed
 		if dr.err != nil {
 			return dr.err
 		}
+		dr.allQueryCnt.Add(allQueryCnt)
 		return nil
 	}
 }
@@ -467,6 +474,7 @@ func (dr *deleteRunner) receiveQueryResult(ctx context.Context, client querypb.Q
 			log.Warn("produce delete task failed", zap.Error(err))
 			return
 		}
+		task.allQueryCnt = result.GetAllRetrieveCount()
 
 		taskCh <- task
 	}

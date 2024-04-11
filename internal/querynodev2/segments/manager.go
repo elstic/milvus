@@ -35,6 +35,7 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/querynodev2/segments/metricsutil"
 	"github.com/milvus-io/milvus/pkg/eventlog"
 	"github.com/milvus-io/milvus/pkg/log"
 	"github.com/milvus-io/milvus/pkg/metrics"
@@ -158,12 +159,11 @@ type Manager struct {
 	Collection CollectionManager
 	Segment    SegmentManager
 	DiskCache  cache.Cache[int64, Segment]
+	Loader     Loader
 }
 
 func NewManager() *Manager {
-	diskCap := paramtable.Get().QueryNodeCfg.DiskCapacityLimit.GetAsInt64()
-	segmentMaxSize := paramtable.Get().DataCoordCfg.SegmentMaxSize.GetAsInt64()
-	cacheMaxItemNum := diskCap / segmentMaxSize
+	diskCap := paramtable.Get().QueryNodeCfg.DiskCacheCapacityLimit.GetAsInt64()
 
 	segMgr := NewSegmentManager()
 	sf := singleflight.Group{}
@@ -171,39 +171,54 @@ func NewManager() *Manager {
 		Collection: NewCollectionManager(),
 		Segment:    segMgr,
 	}
-	manager.DiskCache = cache.NewLRUCache[int64, Segment](
-		int32(cacheMaxItemNum),
-		func(key int64) (Segment, bool) {
-			log.Debug("cache missed segment", zap.Int64("segmentID", key))
-			segMgr.mu.RLock()
-			defer segMgr.mu.RUnlock()
 
-			segment, ok := segMgr.sealedSegments[key]
-			if !ok {
-				// the segment has been released, just ignore it
-				return nil, false
-			}
+	manager.DiskCache = cache.NewCacheBuilder[int64, Segment]().WithLazyScavenger(func(key int64) int64 {
+		return int64(segMgr.sealedSegments[key].ResourceUsageEstimate().DiskSize)
+	}, diskCap).WithLoader(func(key int64) (Segment, bool) {
+		log.Debug("cache missed segment", zap.Int64("segmentID", key))
+		segMgr.mu.RLock()
+		defer segMgr.mu.RUnlock()
 
-			info := segment.LoadInfo()
-			_, err, _ := sf.Do(fmt.Sprint(segment.ID()), func() (interface{}, error) {
-				collection := manager.Collection.Get(segment.Collection())
-				if collection == nil {
-					return nil, merr.WrapErrCollectionNotLoaded(segment.Collection(), "failed to load segment fields")
-				}
-				err := loadSealedSegmentFields(context.Background(), collection, segment.(*LocalSegment), info.BinlogPaths, info.GetNumOfRows(), WithLoadStatus(LoadStatusMapped))
-				return nil, err
-			})
-			if err != nil {
-				log.Warn("cache sealed segment failed", zap.Error(err))
-				return nil, false
+		segment, ok := segMgr.sealedSegments[key]
+		if !ok {
+			// the segment has been released, just ignore it
+			return nil, false
+		}
+
+		info := segment.LoadInfo()
+		_, err, _ := sf.Do(fmt.Sprint(segment.ID()), func() (nop interface{}, err error) {
+			cacheLoadRecord := metricsutil.NewCacheLoadRecord(getSegmentMetricLabel(segment))
+			cacheLoadRecord.WithBytes(segment.ResourceUsageEstimate().DiskSize)
+			defer func() {
+				cacheLoadRecord.Finish(err)
+			}()
+
+			collection := manager.Collection.Get(segment.Collection())
+			if collection == nil {
+				return nil, merr.WrapErrCollectionNotLoaded(segment.Collection(), "failed to load segment fields")
 			}
-			return segment, true
-		},
-		func(key int64, segment Segment) {
-			log.Debug("evict segment from cache", zap.Int64("segmentID", key))
-			segment.Release(WithReleaseScope(ReleaseScopeData))
+			err = manager.Loader.LoadSegment(context.Background(), segment.(*LocalSegment), info, LoadStatusMapped)
+			return nil, err
 		})
+		if err != nil {
+			log.Warn("cache sealed segment failed", zap.Error(err))
+			return nil, false
+		}
+		return segment, true
+	}).WithFinalizer(func(key int64, segment Segment) error {
+		log.Debug("evict segment from cache", zap.Int64("segmentID", key))
+		cacheEvictRecord := metricsutil.NewCacheEvictRecord(getSegmentMetricLabel(segment))
+		cacheEvictRecord.WithBytes(segment.ResourceUsageEstimate().DiskSize)
+		defer cacheEvictRecord.Finish(nil)
+
+		segment.Release(WithReleaseScope(ReleaseScopeData))
+		return nil
+	}).Build()
 	return manager
+}
+
+func (mgr *Manager) SetLoader(loader Loader) {
+	mgr.Loader = loader
 }
 
 type SegmentManager interface {
@@ -366,7 +381,7 @@ func (mgr *segmentManager) GetAndPinBy(filters ...SegmentFilter) ([]Segment, err
 	defer func() {
 		if err != nil {
 			for _, segment := range ret {
-				segment.RUnlock()
+				segment.Unpin()
 			}
 		}
 	}()
@@ -375,7 +390,7 @@ func (mgr *segmentManager) GetAndPinBy(filters ...SegmentFilter) ([]Segment, err
 		if segment.Level() == datapb.SegmentLevel_L0 {
 			return true
 		}
-		err = segment.RLock()
+		err = segment.PinIfNotReleased()
 		if err != nil {
 			return false
 		}
@@ -395,7 +410,7 @@ func (mgr *segmentManager) GetAndPin(segments []int64, filters ...SegmentFilter)
 	defer func() {
 		if err != nil {
 			for _, segment := range lockedSegments {
-				segment.RUnlock()
+				segment.Unpin()
 			}
 		}
 	}()
@@ -413,14 +428,14 @@ func (mgr *segmentManager) GetAndPin(segments []int64, filters ...SegmentFilter)
 		sealedExist = sealedExist && filter(sealed, filters...)
 
 		if growingExist {
-			err = growing.RLock()
+			err = growing.PinIfNotReleased()
 			if err != nil {
 				return nil, err
 			}
 			lockedSegments = append(lockedSegments, growing)
 		}
 		if sealedExist {
-			err = sealed.RLock()
+			err = sealed.PinIfNotReleased()
 			if err != nil {
 				return nil, err
 			}
@@ -438,7 +453,7 @@ func (mgr *segmentManager) GetAndPin(segments []int64, filters ...SegmentFilter)
 
 func (mgr *segmentManager) Unpin(segments []Segment) {
 	for _, segment := range segments {
-		segment.RUnlock()
+		segment.Unpin()
 	}
 }
 

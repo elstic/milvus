@@ -141,17 +141,24 @@ func NewQueryCoord(ctx context.Context) (*Server, error) {
 
 func (s *Server) Register() error {
 	s.session.Register()
-	if s.enableActiveStandBy {
-		if err := s.session.ProcessActiveStandBy(s.activateFunc); err != nil {
-			log.Error("failed to activate standby server", zap.Error(err))
-			return err
-		}
+	afterRegister := func() {
+		metrics.NumNodes.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), typeutil.QueryCoordRole).Inc()
+		s.session.LivenessCheck(s.ctx, func() {
+			log.Error("QueryCoord disconnected from etcd, process will exit", zap.Int64("serverID", s.session.GetServerID()))
+			os.Exit(1)
+		})
 	}
-	metrics.NumNodes.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), typeutil.QueryCoordRole).Inc()
-	s.session.LivenessCheck(s.ctx, func() {
-		log.Error("QueryCoord disconnected from etcd, process will exit", zap.Int64("serverID", s.session.GetServerID()))
-		os.Exit(1)
-	})
+	if s.enableActiveStandBy {
+		go func() {
+			if err := s.session.ProcessActiveStandBy(s.activateFunc); err != nil {
+				log.Error("failed to activate standby server", zap.Error(err))
+				return
+			}
+			afterRegister()
+		}()
+	} else {
+		afterRegister()
+	}
 	return nil
 }
 
@@ -722,7 +729,7 @@ func (s *Server) handleNodeUp(node int64) {
 		zap.String("resourceGroup", rgName),
 	)
 
-	utils.AddNodesToCollectionsInRG(s.meta, meta.DefaultResourceGroupName, node)
+	utils.RecoverAllCollection(s.meta)
 }
 
 func (s *Server) handleNodeDown(node int64) {
@@ -776,7 +783,6 @@ func (s *Server) checkReplicas() {
 		log := log.With(zap.Int64("collectionID", collection))
 		replicas := s.meta.ReplicaManager.GetByCollection(collection)
 		for _, replica := range replicas {
-			replica := replica.Clone()
 			toRemove := make([]int64, 0)
 			for _, node := range replica.GetNodes() {
 				if s.nodeMgr.Get(node) == nil {
@@ -790,9 +796,7 @@ func (s *Server) checkReplicas() {
 					zap.Int64s("offlineNodes", toRemove),
 				)
 				log.Info("some nodes are offline, remove them from replica", zap.Any("toRemove", toRemove))
-				replica.RemoveNode(toRemove...)
-				err := s.meta.ReplicaManager.Put(replica)
-				if err != nil {
+				if err := s.meta.ReplicaManager.RemoveNode(replica.GetID(), toRemove...); err != nil {
 					log.Warn("failed to remove offline nodes from replica")
 				}
 			}

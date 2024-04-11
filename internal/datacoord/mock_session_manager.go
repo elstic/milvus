@@ -24,62 +24,6 @@ func (_m *MockSessionManager) EXPECT() *MockSessionManager_Expecter {
 	return &MockSessionManager_Expecter{mock: &_m.Mock}
 }
 
-// AddImportSegment provides a mock function with given fields: ctx, nodeID, req
-func (_m *MockSessionManager) AddImportSegment(ctx context.Context, nodeID int64, req *datapb.AddImportSegmentRequest) (*datapb.AddImportSegmentResponse, error) {
-	ret := _m.Called(ctx, nodeID, req)
-
-	var r0 *datapb.AddImportSegmentResponse
-	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, int64, *datapb.AddImportSegmentRequest) (*datapb.AddImportSegmentResponse, error)); ok {
-		return rf(ctx, nodeID, req)
-	}
-	if rf, ok := ret.Get(0).(func(context.Context, int64, *datapb.AddImportSegmentRequest) *datapb.AddImportSegmentResponse); ok {
-		r0 = rf(ctx, nodeID, req)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*datapb.AddImportSegmentResponse)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(context.Context, int64, *datapb.AddImportSegmentRequest) error); ok {
-		r1 = rf(ctx, nodeID, req)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// MockSessionManager_AddImportSegment_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'AddImportSegment'
-type MockSessionManager_AddImportSegment_Call struct {
-	*mock.Call
-}
-
-// AddImportSegment is a helper method to define mock.On call
-//   - ctx context.Context
-//   - nodeID int64
-//   - req *datapb.AddImportSegmentRequest
-func (_e *MockSessionManager_Expecter) AddImportSegment(ctx interface{}, nodeID interface{}, req interface{}) *MockSessionManager_AddImportSegment_Call {
-	return &MockSessionManager_AddImportSegment_Call{Call: _e.mock.On("AddImportSegment", ctx, nodeID, req)}
-}
-
-func (_c *MockSessionManager_AddImportSegment_Call) Run(run func(ctx context.Context, nodeID int64, req *datapb.AddImportSegmentRequest)) *MockSessionManager_AddImportSegment_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(int64), args[2].(*datapb.AddImportSegmentRequest))
-	})
-	return _c
-}
-
-func (_c *MockSessionManager_AddImportSegment_Call) Return(_a0 *datapb.AddImportSegmentResponse, _a1 error) *MockSessionManager_AddImportSegment_Call {
-	_c.Call.Return(_a0, _a1)
-	return _c
-}
-
-func (_c *MockSessionManager_AddImportSegment_Call) RunAndReturn(run func(context.Context, int64, *datapb.AddImportSegmentRequest) (*datapb.AddImportSegmentResponse, error)) *MockSessionManager_AddImportSegment_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
 // AddSession provides a mock function with given fields: node
 func (_m *MockSessionManager) AddSession(node *NodeInfo) {
 	_m.Called(node)
@@ -577,41 +521,6 @@ func (_c *MockSessionManager_GetSessions_Call) Return(_a0 []*Session) *MockSessi
 }
 
 func (_c *MockSessionManager_GetSessions_Call) RunAndReturn(run func() []*Session) *MockSessionManager_GetSessions_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
-// Import provides a mock function with given fields: ctx, nodeID, itr
-func (_m *MockSessionManager) Import(ctx context.Context, nodeID int64, itr *datapb.ImportTaskRequest) {
-	_m.Called(ctx, nodeID, itr)
-}
-
-// MockSessionManager_Import_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Import'
-type MockSessionManager_Import_Call struct {
-	*mock.Call
-}
-
-// Import is a helper method to define mock.On call
-//   - ctx context.Context
-//   - nodeID int64
-//   - itr *datapb.ImportTaskRequest
-func (_e *MockSessionManager_Expecter) Import(ctx interface{}, nodeID interface{}, itr interface{}) *MockSessionManager_Import_Call {
-	return &MockSessionManager_Import_Call{Call: _e.mock.On("Import", ctx, nodeID, itr)}
-}
-
-func (_c *MockSessionManager_Import_Call) Run(run func(ctx context.Context, nodeID int64, itr *datapb.ImportTaskRequest)) *MockSessionManager_Import_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(int64), args[2].(*datapb.ImportTaskRequest))
-	})
-	return _c
-}
-
-func (_c *MockSessionManager_Import_Call) Return() *MockSessionManager_Import_Call {
-	_c.Call.Return()
-	return _c
-}
-
-func (_c *MockSessionManager_Import_Call) RunAndReturn(run func(context.Context, int64, *datapb.ImportTaskRequest)) *MockSessionManager_Import_Call {
 	_c.Call.Return(run)
 	return _c
 }

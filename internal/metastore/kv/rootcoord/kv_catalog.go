@@ -110,6 +110,16 @@ func (kc *Catalog) CreateDatabase(ctx context.Context, db *model.Database, ts ty
 	return kc.Snapshot.Save(key, string(v), ts)
 }
 
+func (kc *Catalog) AlterDatabase(ctx context.Context, newColl *model.Database, ts typeutil.Timestamp) error {
+	key := BuildDatabaseKey(newColl.ID)
+	dbInfo := model.MarshalDatabaseModel(newColl)
+	v, err := proto.Marshal(dbInfo)
+	if err != nil {
+		return err
+	}
+	return kc.Snapshot.Save(key, string(v), ts)
+}
+
 func (kc *Catalog) DropDatabase(ctx context.Context, dbID int64, ts typeutil.Timestamp) error {
 	key := BuildDatabaseKey(dbID)
 	return kc.Snapshot.MultiSaveAndRemoveWithPrefix(nil, []string{key}, ts)
@@ -1031,7 +1041,7 @@ func (kc *Catalog) ListGrant(ctx context.Context, tenant string, entity *milvusp
 	appendGrantEntity := func(v string, object string, objectName string) error {
 		dbName := ""
 		dbName, objectName = funcutil.SplitObjectName(objectName)
-		if dbName != entity.DbName && dbName != util.AnyWord {
+		if dbName != entity.DbName && dbName != util.AnyWord && entity.DbName != util.AnyWord {
 			return nil
 		}
 		granteeIDKey := funcutil.HandleTenantForEtcdKey(GranteeIDPrefix, tenant, v)

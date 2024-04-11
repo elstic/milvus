@@ -19,6 +19,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/planpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/exprutil"
 	typeutil2 "github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/milvus-io/milvus/pkg/common"
 	"github.com/milvus-io/milvus/pkg/log"
@@ -64,7 +65,9 @@ type queryTask struct {
 	channelsMvcc     map[string]Timestamp
 	fastSkip         bool
 
-	reQuery bool
+	reQuery              bool
+	allQueryCnt          int64
+	totalRelatedDataSize int64
 }
 
 type queryParams struct {
@@ -78,7 +81,7 @@ func translateToOutputFieldIDs(outputFields []string, schema *schemapb.Collectio
 	outputFieldIDs := make([]UniqueID, 0, len(outputFields)+1)
 	if len(outputFields) == 0 {
 		for _, field := range schema.Fields {
-			if field.FieldID >= common.StartOfUserFieldID && !isVectorType(field.DataType) {
+			if field.FieldID >= common.StartOfUserFieldID && !typeutil.IsVectorType(field.DataType) {
 				outputFieldIDs = append(outputFieldIDs, field.FieldID)
 			}
 		}
@@ -332,7 +335,11 @@ func (t *queryTask) PreExecute(ctx context.Context) error {
 	t.queryParams = queryParams
 	t.RetrieveRequest.Limit = queryParams.limit + queryParams.offset
 
-	schema, _ := globalMetaCache.GetCollectionSchema(ctx, t.request.GetDbName(), t.collectionName)
+	schema, err := globalMetaCache.GetCollectionSchema(ctx, t.request.GetDbName(), t.collectionName)
+	if err != nil {
+		log.Warn("get collection schema failed", zap.Error(err))
+		return err
+	}
 	t.schema = schema
 
 	if t.ids != nil {
@@ -358,11 +365,11 @@ func (t *queryTask) PreExecute(ctx context.Context) error {
 	if !t.reQuery {
 		partitionNames := t.request.GetPartitionNames()
 		if t.partitionKeyMode {
-			expr, err := ParseExprFromPlan(t.plan)
+			expr, err := exprutil.ParseExprFromPlan(t.plan)
 			if err != nil {
 				return err
 			}
-			partitionKeys := ParsePartitionKeys(expr)
+			partitionKeys := exprutil.ParseKeys(expr, exprutil.PartitionKey)
 			hashedPartitionNames, err := assignPartitionKeys(ctx, t.request.GetDbName(), t.request.CollectionName, partitionKeys)
 			if err != nil {
 				return err
@@ -468,6 +475,8 @@ func (t *queryTask) PostExecute(ctx context.Context) error {
 	var err error
 
 	toReduceResults := make([]*internalpb.RetrieveResults, 0)
+	t.allQueryCnt = 0
+	t.totalRelatedDataSize = 0
 	select {
 	case <-t.TraceCtx().Done():
 		log.Warn("proxy", zap.Int64("Query: wait to finish failed, timeout!, msgID:", t.ID()))
@@ -476,6 +485,8 @@ func (t *queryTask) PostExecute(ctx context.Context) error {
 		log.Debug("all queries are finished or canceled")
 		t.resultBuf.Range(func(res *internalpb.RetrieveResults) bool {
 			toReduceResults = append(toReduceResults, res)
+			t.allQueryCnt += res.GetAllRetrieveCount()
+			t.totalRelatedDataSize += res.GetCostAggregation().GetTotalRelatedDataSize()
 			log.Debug("proxy receives one query result", zap.Int64("sourceID", res.GetBase().GetSourceID()))
 			return true
 		})
@@ -591,20 +602,25 @@ func reduceRetrieveResults(ctx context.Context, retrieveResults []*internalpb.Re
 	idSet := make(map[interface{}]struct{})
 	cursors := make([]int64, len(validRetrieveResults))
 
+	retrieveLimit := typeutil.Unlimited
 	if queryParams != nil && queryParams.limit != typeutil.Unlimited {
+		retrieveLimit = queryParams.limit + queryParams.offset
 		if !queryParams.reduceStopForBest {
 			loopEnd = int(queryParams.limit)
 		}
-		if queryParams.offset > 0 {
-			for i := int64(0); i < queryParams.offset; i++ {
-				sel, drainOneResult := typeutil.SelectMinPK(validRetrieveResults, cursors)
-				if sel == -1 || (queryParams.reduceStopForBest && drainOneResult) {
-					return ret, nil
-				}
-				cursors[sel]++
+	}
+
+	// handle offset
+	if queryParams != nil && queryParams.offset > 0 {
+		for i := int64(0); i < queryParams.offset; i++ {
+			sel, drainOneResult := typeutil.SelectMinPK(retrieveLimit, validRetrieveResults, cursors)
+			if sel == -1 || (queryParams.reduceStopForBest && drainOneResult) {
+				return ret, nil
 			}
+			cursors[sel]++
 		}
 	}
+
 	reduceStopForBest := false
 	if queryParams != nil {
 		reduceStopForBest = queryParams.reduceStopForBest
@@ -613,7 +629,7 @@ func reduceRetrieveResults(ctx context.Context, retrieveResults []*internalpb.Re
 	var retSize int64
 	maxOutputSize := paramtable.Get().QuotaConfig.MaxOutputSize.GetAsInt64()
 	for j := 0; j < loopEnd; j++ {
-		sel, drainOneResult := typeutil.SelectMinPK(validRetrieveResults, cursors)
+		sel, drainOneResult := typeutil.SelectMinPK(retrieveLimit, validRetrieveResults, cursors)
 		if sel == -1 || (reduceStopForBest && drainOneResult) {
 			break
 		}

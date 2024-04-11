@@ -23,7 +23,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/proto/segcorepb"
-	storage "github.com/milvus-io/milvus/internal/storage"
+	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/pkg/util/typeutil"
 )
 
@@ -50,6 +50,8 @@ type Segment interface {
 
 	// Properties
 	ID() int64
+	DatabaseName() string
+	ResourceGroup() string
 	Collection() int64
 	Partition() int64
 	Shard() string
@@ -60,8 +62,10 @@ type Segment interface {
 	Level() datapb.SegmentLevel
 	LoadStatus() LoadStatus
 	LoadInfo() *querypb.SegmentLoadInfo
-	RLock() error
-	RUnlock()
+	// PinIfNotReleased the segment to prevent it from being released
+	PinIfNotReleased() error
+	// Unpin the segment to allow it to be released
+	Unpin()
 
 	// Stats related
 	// InsertCount returns the number of inserted rows, not effected by deletion
@@ -92,4 +96,6 @@ type Segment interface {
 	// Read operations
 	Search(ctx context.Context, searchReq *SearchRequest) (*SearchResult, error)
 	Retrieve(ctx context.Context, plan *RetrievePlan) (*segcorepb.RetrieveResults, error)
+	IsLazyLoad() bool
+	ResetIndexesLazyLoad(lazyState bool)
 }

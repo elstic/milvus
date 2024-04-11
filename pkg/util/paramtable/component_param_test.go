@@ -117,8 +117,6 @@ func TestComponentParam(t *testing.T) {
 		t.Logf("master MaxPartitionNum = %d", Params.MaxPartitionNum.GetAsInt64())
 		assert.NotEqual(t, Params.MinSegmentSizeToEnableIndex.GetAsInt64(), 0)
 		t.Logf("master MinSegmentSizeToEnableIndex = %d", Params.MinSegmentSizeToEnableIndex.GetAsInt64())
-		assert.NotEqual(t, Params.ImportTaskExpiration.GetAsFloat(), 0)
-		t.Logf("master ImportTaskRetention = %f", Params.ImportTaskRetention.GetAsFloat())
 		assert.Equal(t, Params.EnableActiveStandby.GetAsBool(), false)
 		t.Logf("rootCoord EnableActiveStandby = %t", Params.EnableActiveStandby.GetAsBool())
 
@@ -367,6 +365,10 @@ func TestComponentParam(t *testing.T) {
 		assert.Equal(t, 2.5, Params.MemoryIndexLoadPredictMemoryUsageFactor.GetAsFloat())
 		params.Save("queryNode.memoryIndexLoadPredictMemoryUsageFactor", "2.0")
 		assert.Equal(t, 2.0, Params.MemoryIndexLoadPredictMemoryUsageFactor.GetAsFloat())
+
+		assert.NotZero(t, Params.DiskCacheCapacityLimit.GetAsInt64())
+		params.Save("queryNode.diskCacheCapacityLimit", "70")
+		assert.Equal(t, int64(70), Params.DiskCacheCapacityLimit.GetAsInt64())
 	})
 
 	t.Run("test dataCoordConfig", func(t *testing.T) {
@@ -385,6 +387,8 @@ func TestComponentParam(t *testing.T) {
 		assert.Equal(t, 2*time.Second, Params.ImportScheduleInterval.GetAsDuration(time.Second))
 		assert.Equal(t, 2*time.Second, Params.ImportCheckIntervalHigh.GetAsDuration(time.Second))
 		assert.Equal(t, 120*time.Second, Params.ImportCheckIntervalLow.GetAsDuration(time.Second))
+		assert.Equal(t, 1024, Params.MaxFilesPerImportReq.GetAsInt())
+		assert.Equal(t, true, Params.WaitForIndex.GetAsBool())
 
 		params.Save("datacoord.gracefulStopTimeout", "100")
 		assert.Equal(t, 100*time.Second, Params.GracefulStopTimeout.GetAsDuration(time.Second))
@@ -423,10 +427,6 @@ func TestComponentParam(t *testing.T) {
 		t.Logf("SyncPeriod: %v", period)
 		assert.Equal(t, 10*time.Minute, Params.SyncPeriod.GetAsDuration(time.Second))
 
-		bulkinsertTimeout := &Params.BulkInsertTimeoutSeconds
-		t.Logf("BulkInsertTimeoutSeconds: %v", bulkinsertTimeout)
-		assert.Equal(t, "18000", Params.BulkInsertTimeoutSeconds.GetValue())
-
 		channelWorkPoolSize := Params.ChannelWorkPoolSize.GetAsInt()
 		t.Logf("channelWorkPoolSize: %d", channelWorkPoolSize)
 		assert.Equal(t, -1, Params.ChannelWorkPoolSize.GetAsInt())
@@ -440,6 +440,8 @@ func TestComponentParam(t *testing.T) {
 		maxConcurrentImportTaskNum := Params.MaxConcurrentImportTaskNum.GetAsInt()
 		t.Logf("maxConcurrentImportTaskNum: %d", maxConcurrentImportTaskNum)
 		assert.Equal(t, 16, maxConcurrentImportTaskNum)
+		assert.Equal(t, int64(16), Params.MaxImportFileSizeInGB.GetAsInt64())
+		assert.Equal(t, 16, Params.ReadBufferSizeInMB.GetAsInt())
 		params.Save("datanode.gracefulStopTimeout", "100")
 		assert.Equal(t, 100*time.Second, Params.GracefulStopTimeout.GetAsDuration(time.Second))
 	})

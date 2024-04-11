@@ -1246,61 +1246,6 @@ func (_c *RootCoord_GetCredential_Call) RunAndReturn(run func(context.Context, *
 	return _c
 }
 
-// GetImportState provides a mock function with given fields: _a0, _a1
-func (_m *RootCoord) GetImportState(_a0 context.Context, _a1 *milvuspb.GetImportStateRequest) (*milvuspb.GetImportStateResponse, error) {
-	ret := _m.Called(_a0, _a1)
-
-	var r0 *milvuspb.GetImportStateResponse
-	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, *milvuspb.GetImportStateRequest) (*milvuspb.GetImportStateResponse, error)); ok {
-		return rf(_a0, _a1)
-	}
-	if rf, ok := ret.Get(0).(func(context.Context, *milvuspb.GetImportStateRequest) *milvuspb.GetImportStateResponse); ok {
-		r0 = rf(_a0, _a1)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*milvuspb.GetImportStateResponse)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(context.Context, *milvuspb.GetImportStateRequest) error); ok {
-		r1 = rf(_a0, _a1)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// RootCoord_GetImportState_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GetImportState'
-type RootCoord_GetImportState_Call struct {
-	*mock.Call
-}
-
-// GetImportState is a helper method to define mock.On call
-//   - _a0 context.Context
-//   - _a1 *milvuspb.GetImportStateRequest
-func (_e *RootCoord_Expecter) GetImportState(_a0 interface{}, _a1 interface{}) *RootCoord_GetImportState_Call {
-	return &RootCoord_GetImportState_Call{Call: _e.mock.On("GetImportState", _a0, _a1)}
-}
-
-func (_c *RootCoord_GetImportState_Call) Run(run func(_a0 context.Context, _a1 *milvuspb.GetImportStateRequest)) *RootCoord_GetImportState_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(*milvuspb.GetImportStateRequest))
-	})
-	return _c
-}
-
-func (_c *RootCoord_GetImportState_Call) Return(_a0 *milvuspb.GetImportStateResponse, _a1 error) *RootCoord_GetImportState_Call {
-	_c.Call.Return(_a0, _a1)
-	return _c
-}
-
-func (_c *RootCoord_GetImportState_Call) RunAndReturn(run func(context.Context, *milvuspb.GetImportStateRequest) (*milvuspb.GetImportStateResponse, error)) *RootCoord_GetImportState_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
 // GetMetrics provides a mock function with given fields: ctx, req
 func (_m *RootCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	ret := _m.Called(ctx, req)
@@ -1576,61 +1521,6 @@ func (_c *RootCoord_HasPartition_Call) RunAndReturn(run func(context.Context, *m
 	return _c
 }
 
-// Import provides a mock function with given fields: _a0, _a1
-func (_m *RootCoord) Import(_a0 context.Context, _a1 *milvuspb.ImportRequest) (*milvuspb.ImportResponse, error) {
-	ret := _m.Called(_a0, _a1)
-
-	var r0 *milvuspb.ImportResponse
-	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, *milvuspb.ImportRequest) (*milvuspb.ImportResponse, error)); ok {
-		return rf(_a0, _a1)
-	}
-	if rf, ok := ret.Get(0).(func(context.Context, *milvuspb.ImportRequest) *milvuspb.ImportResponse); ok {
-		r0 = rf(_a0, _a1)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*milvuspb.ImportResponse)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(context.Context, *milvuspb.ImportRequest) error); ok {
-		r1 = rf(_a0, _a1)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// RootCoord_Import_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Import'
-type RootCoord_Import_Call struct {
-	*mock.Call
-}
-
-// Import is a helper method to define mock.On call
-//   - _a0 context.Context
-//   - _a1 *milvuspb.ImportRequest
-func (_e *RootCoord_Expecter) Import(_a0 interface{}, _a1 interface{}) *RootCoord_Import_Call {
-	return &RootCoord_Import_Call{Call: _e.mock.On("Import", _a0, _a1)}
-}
-
-func (_c *RootCoord_Import_Call) Run(run func(_a0 context.Context, _a1 *milvuspb.ImportRequest)) *RootCoord_Import_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(*milvuspb.ImportRequest))
-	})
-	return _c
-}
-
-func (_c *RootCoord_Import_Call) Return(_a0 *milvuspb.ImportResponse, _a1 error) *RootCoord_Import_Call {
-	_c.Call.Return(_a0, _a1)
-	return _c
-}
-
-func (_c *RootCoord_Import_Call) RunAndReturn(run func(context.Context, *milvuspb.ImportRequest) (*milvuspb.ImportResponse, error)) *RootCoord_Import_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
 // Init provides a mock function with given fields:
 func (_m *RootCoord) Init() error {
 	ret := _m.Called()
@@ -1892,61 +1782,6 @@ func (_c *RootCoord_ListDatabases_Call) RunAndReturn(run func(context.Context, *
 	return _c
 }
 
-// ListImportTasks provides a mock function with given fields: _a0, _a1
-func (_m *RootCoord) ListImportTasks(_a0 context.Context, _a1 *milvuspb.ListImportTasksRequest) (*milvuspb.ListImportTasksResponse, error) {
-	ret := _m.Called(_a0, _a1)
-
-	var r0 *milvuspb.ListImportTasksResponse
-	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, *milvuspb.ListImportTasksRequest) (*milvuspb.ListImportTasksResponse, error)); ok {
-		return rf(_a0, _a1)
-	}
-	if rf, ok := ret.Get(0).(func(context.Context, *milvuspb.ListImportTasksRequest) *milvuspb.ListImportTasksResponse); ok {
-		r0 = rf(_a0, _a1)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*milvuspb.ListImportTasksResponse)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(context.Context, *milvuspb.ListImportTasksRequest) error); ok {
-		r1 = rf(_a0, _a1)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// RootCoord_ListImportTasks_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ListImportTasks'
-type RootCoord_ListImportTasks_Call struct {
-	*mock.Call
-}
-
-// ListImportTasks is a helper method to define mock.On call
-//   - _a0 context.Context
-//   - _a1 *milvuspb.ListImportTasksRequest
-func (_e *RootCoord_Expecter) ListImportTasks(_a0 interface{}, _a1 interface{}) *RootCoord_ListImportTasks_Call {
-	return &RootCoord_ListImportTasks_Call{Call: _e.mock.On("ListImportTasks", _a0, _a1)}
-}
-
-func (_c *RootCoord_ListImportTasks_Call) Run(run func(_a0 context.Context, _a1 *milvuspb.ListImportTasksRequest)) *RootCoord_ListImportTasks_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(*milvuspb.ListImportTasksRequest))
-	})
-	return _c
-}
-
-func (_c *RootCoord_ListImportTasks_Call) Return(_a0 *milvuspb.ListImportTasksResponse, _a1 error) *RootCoord_ListImportTasks_Call {
-	_c.Call.Return(_a0, _a1)
-	return _c
-}
-
-func (_c *RootCoord_ListImportTasks_Call) RunAndReturn(run func(context.Context, *milvuspb.ListImportTasksRequest) (*milvuspb.ListImportTasksResponse, error)) *RootCoord_ListImportTasks_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
 // ListPolicy provides a mock function with given fields: _a0, _a1
 func (_m *RootCoord) ListPolicy(_a0 context.Context, _a1 *internalpb.ListPolicyRequest) (*internalpb.ListPolicyResponse, error) {
 	ret := _m.Called(_a0, _a1)
@@ -2204,61 +2039,6 @@ func (_c *RootCoord_RenameCollection_Call) Return(_a0 *commonpb.Status, _a1 erro
 }
 
 func (_c *RootCoord_RenameCollection_Call) RunAndReturn(run func(context.Context, *milvuspb.RenameCollectionRequest) (*commonpb.Status, error)) *RootCoord_RenameCollection_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
-// ReportImport provides a mock function with given fields: _a0, _a1
-func (_m *RootCoord) ReportImport(_a0 context.Context, _a1 *rootcoordpb.ImportResult) (*commonpb.Status, error) {
-	ret := _m.Called(_a0, _a1)
-
-	var r0 *commonpb.Status
-	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, *rootcoordpb.ImportResult) (*commonpb.Status, error)); ok {
-		return rf(_a0, _a1)
-	}
-	if rf, ok := ret.Get(0).(func(context.Context, *rootcoordpb.ImportResult) *commonpb.Status); ok {
-		r0 = rf(_a0, _a1)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*commonpb.Status)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(context.Context, *rootcoordpb.ImportResult) error); ok {
-		r1 = rf(_a0, _a1)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// RootCoord_ReportImport_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ReportImport'
-type RootCoord_ReportImport_Call struct {
-	*mock.Call
-}
-
-// ReportImport is a helper method to define mock.On call
-//   - _a0 context.Context
-//   - _a1 *rootcoordpb.ImportResult
-func (_e *RootCoord_Expecter) ReportImport(_a0 interface{}, _a1 interface{}) *RootCoord_ReportImport_Call {
-	return &RootCoord_ReportImport_Call{Call: _e.mock.On("ReportImport", _a0, _a1)}
-}
-
-func (_c *RootCoord_ReportImport_Call) Run(run func(_a0 context.Context, _a1 *rootcoordpb.ImportResult)) *RootCoord_ReportImport_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(*rootcoordpb.ImportResult))
-	})
-	return _c
-}
-
-func (_c *RootCoord_ReportImport_Call) Return(_a0 *commonpb.Status, _a1 error) *RootCoord_ReportImport_Call {
-	_c.Call.Return(_a0, _a1)
-	return _c
-}
-
-func (_c *RootCoord_ReportImport_Call) RunAndReturn(run func(context.Context, *rootcoordpb.ImportResult) (*commonpb.Status, error)) *RootCoord_ReportImport_Call {
 	_c.Call.Return(run)
 	return _c
 }

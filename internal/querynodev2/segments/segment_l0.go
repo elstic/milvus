@@ -1,8 +1,10 @@
-// Copyright 2023 yah01
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 //
@@ -66,11 +68,11 @@ func NewL0Segment(collection *Collection,
 	return segment, nil
 }
 
-func (s *L0Segment) RLock() error {
+func (s *L0Segment) PinIfNotReleased() error {
 	return nil
 }
 
-func (s *L0Segment) RUnlock() {}
+func (s *L0Segment) Unpin() {}
 
 func (s *L0Segment) InsertCount() int64 {
 	return 0
@@ -81,6 +83,8 @@ func (s *L0Segment) RowNum() int64 {
 }
 
 func (s *L0Segment) MemSize() int64 {
+	s.dataGuard.RLock()
+	defer s.dataGuard.RUnlock()
 	return lo.SumBy(s.pks, func(pk storage.PrimaryKey) int64 {
 		return pk.Size() + 8
 	})
@@ -111,6 +115,9 @@ func (s *L0Segment) HasRawData(fieldID int64) bool {
 
 func (s *L0Segment) Indexes() []*IndexedFieldInfo {
 	return nil
+}
+
+func (s *L0Segment) ResetIndexesLazyLoad(lazyState bool) {
 }
 
 func (s *L0Segment) Type() SegmentType {

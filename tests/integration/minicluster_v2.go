@@ -47,9 +47,11 @@ import (
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/dependency"
+	"github.com/milvus-io/milvus/internal/util/hookutil"
 	"github.com/milvus-io/milvus/pkg/log"
 	"github.com/milvus-io/milvus/pkg/util/etcd"
 	"github.com/milvus-io/milvus/pkg/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/util/typeutil"
 )
 
 var params *paramtable.ComponentParam = paramtable.Get()
@@ -125,6 +127,8 @@ type MiniClusterV2 struct {
 	qnid        atomic.Int64
 	datanodes   []*grpcdatanode.Server
 	dnid        atomic.Int64
+
+	Extension *ReportChanExtension
 }
 
 type OptionV2 func(cluster *MiniClusterV2)
@@ -136,6 +140,8 @@ func StartMiniClusterV2(ctx context.Context, opts ...OptionV2) (*MiniClusterV2, 
 		dnid: *atomic.NewInt64(20000),
 	}
 	paramtable.Init()
+	cluster.Extension = InitReportExtension()
+
 	cluster.params = DefaultParams()
 	cluster.clusterConfig = DefaultClusterConfig()
 	for _, opt := range opts {
@@ -422,15 +428,15 @@ func (cluster *MiniClusterV2) GetFactory() dependency.Factory {
 }
 
 func (cluster *MiniClusterV2) GetAvailablePorts(n int) ([]int, error) {
-	ports := make([]int, n)
-	for i := range ports {
+	ports := typeutil.NewSet[int]()
+	for ports.Len() < n {
 		port, err := cluster.GetAvailablePort()
 		if err != nil {
 			return nil, err
 		}
-		ports[i] = port
+		ports.Insert(port)
 	}
-	return ports, nil
+	return ports.Collect(), nil
 }
 
 func (cluster *MiniClusterV2) GetAvailablePort() (int, error) {
@@ -444,4 +450,33 @@ func (cluster *MiniClusterV2) GetAvailablePort() (int, error) {
 	}
 	defer listener.Close()
 	return listener.Addr().(*net.TCPAddr).Port, nil
+}
+
+func InitReportExtension() *ReportChanExtension {
+	e := NewReportChanExtension()
+	hookutil.InitOnceHook()
+	hookutil.Extension = e
+	return e
+}
+
+type ReportChanExtension struct {
+	reportChan chan any
+}
+
+func NewReportChanExtension() *ReportChanExtension {
+	return &ReportChanExtension{
+		reportChan: make(chan any),
+	}
+}
+
+func (r *ReportChanExtension) Report(info any) int {
+	select {
+	case r.reportChan <- info:
+	default:
+	}
+	return 1
+}
+
+func (r *ReportChanExtension) GetReportChan() <-chan any {
+	return r.reportChan
 }

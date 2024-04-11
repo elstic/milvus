@@ -27,6 +27,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/proto/segcorepb"
+	"github.com/milvus-io/milvus/internal/querynodev2/segments/metricsutil"
 	"github.com/milvus-io/milvus/internal/util/streamrpc"
 	"github.com/milvus-io/milvus/pkg/log"
 	"github.com/milvus-io/milvus/pkg/metrics"
@@ -49,29 +50,41 @@ func retrieveOnSegments(ctx context.Context, mgr *Manager, segments []Segment, s
 		label = metrics.GrowingSegmentLabel
 	}
 
+	retriever := func(s Segment) error {
+		tr := timerecord.NewTimeRecorder("retrieveOnSegments")
+		result, err := s.Retrieve(ctx, plan)
+		resultCh <- result
+		if err != nil {
+			return err
+		}
+		metrics.QueryNodeSQSegmentLatency.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()),
+			metrics.QueryLabel, label).Observe(float64(tr.ElapseSpan().Milliseconds()))
+		return nil
+	}
+
 	for i, segment := range segments {
 		wg.Add(1)
 		go func(seg Segment, i int) {
 			defer wg.Done()
-			tr := timerecord.NewTimeRecorder("retrieveOnSegments")
-			if seg.LoadStatus() == LoadStatusMeta {
-				item, ok := mgr.DiskCache.GetAndPin(seg.ID())
-				if !ok {
-					errs[i] = merr.WrapErrSegmentNotLoaded(seg.ID())
-					return
-				}
-				defer item.Unpin()
-			}
+			// record search time and cache miss
+			var err error
+			accessRecord := metricsutil.NewQuerySegmentAccessRecord(getSegmentMetricLabel(seg))
+			defer func() {
+				accessRecord.Finish(err)
+			}()
 
-			result, err := seg.Retrieve(ctx, plan)
+			if seg.IsLazyLoad() {
+				var missing bool
+				missing, err = mgr.DiskCache.Do(seg.ID(), retriever)
+				if missing {
+					accessRecord.CacheMissing()
+				}
+			} else {
+				err = retriever(seg)
+			}
 			if err != nil {
 				errs[i] = err
-				return
 			}
-			errs[i] = nil
-			resultCh <- result
-			metrics.QueryNodeSQSegmentLatency.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()),
-				metrics.QueryLabel, label).Observe(float64(tr.ElapseSpan().Milliseconds()))
 		}(segment, i)
 	}
 	wg.Wait()
@@ -118,6 +131,10 @@ func retrieveOnSegmentsWithStream(ctx context.Context, segments []Segment, segTy
 					Status:     merr.Success(),
 					Ids:        result.GetIds(),
 					FieldsData: result.GetFieldsData(),
+					CostAggregation: &internalpb.CostAggregation{
+						TotalRelatedDataSize: segment.MemSize(),
+					},
+					AllRetrieveCount: result.GetAllRetrieveCount(),
 				}); err != nil {
 					errs[i] = err
 				}

@@ -22,61 +22,6 @@ func (_m *MockCluster) EXPECT() *MockCluster_Expecter {
 	return &MockCluster_Expecter{mock: &_m.Mock}
 }
 
-// AddImportSegment provides a mock function with given fields: ctx, req
-func (_m *MockCluster) AddImportSegment(ctx context.Context, req *datapb.AddImportSegmentRequest) (*datapb.AddImportSegmentResponse, error) {
-	ret := _m.Called(ctx, req)
-
-	var r0 *datapb.AddImportSegmentResponse
-	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, *datapb.AddImportSegmentRequest) (*datapb.AddImportSegmentResponse, error)); ok {
-		return rf(ctx, req)
-	}
-	if rf, ok := ret.Get(0).(func(context.Context, *datapb.AddImportSegmentRequest) *datapb.AddImportSegmentResponse); ok {
-		r0 = rf(ctx, req)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*datapb.AddImportSegmentResponse)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(context.Context, *datapb.AddImportSegmentRequest) error); ok {
-		r1 = rf(ctx, req)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// MockCluster_AddImportSegment_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'AddImportSegment'
-type MockCluster_AddImportSegment_Call struct {
-	*mock.Call
-}
-
-// AddImportSegment is a helper method to define mock.On call
-//   - ctx context.Context
-//   - req *datapb.AddImportSegmentRequest
-func (_e *MockCluster_Expecter) AddImportSegment(ctx interface{}, req interface{}) *MockCluster_AddImportSegment_Call {
-	return &MockCluster_AddImportSegment_Call{Call: _e.mock.On("AddImportSegment", ctx, req)}
-}
-
-func (_c *MockCluster_AddImportSegment_Call) Run(run func(ctx context.Context, req *datapb.AddImportSegmentRequest)) *MockCluster_AddImportSegment_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(*datapb.AddImportSegmentRequest))
-	})
-	return _c
-}
-
-func (_c *MockCluster_AddImportSegment_Call) Return(_a0 *datapb.AddImportSegmentResponse, _a1 error) *MockCluster_AddImportSegment_Call {
-	_c.Call.Return(_a0, _a1)
-	return _c
-}
-
-func (_c *MockCluster_AddImportSegment_Call) RunAndReturn(run func(context.Context, *datapb.AddImportSegmentRequest) (*datapb.AddImportSegmentResponse, error)) *MockCluster_AddImportSegment_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
 // Close provides a mock function with given fields:
 func (_m *MockCluster) Close() {
 	_m.Called()
@@ -281,41 +226,6 @@ func (_c *MockCluster_GetSessions_Call) Return(_a0 []*Session) *MockCluster_GetS
 }
 
 func (_c *MockCluster_GetSessions_Call) RunAndReturn(run func() []*Session) *MockCluster_GetSessions_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
-// Import provides a mock function with given fields: ctx, nodeID, it
-func (_m *MockCluster) Import(ctx context.Context, nodeID int64, it *datapb.ImportTaskRequest) {
-	_m.Called(ctx, nodeID, it)
-}
-
-// MockCluster_Import_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Import'
-type MockCluster_Import_Call struct {
-	*mock.Call
-}
-
-// Import is a helper method to define mock.On call
-//   - ctx context.Context
-//   - nodeID int64
-//   - it *datapb.ImportTaskRequest
-func (_e *MockCluster_Expecter) Import(ctx interface{}, nodeID interface{}, it interface{}) *MockCluster_Import_Call {
-	return &MockCluster_Import_Call{Call: _e.mock.On("Import", ctx, nodeID, it)}
-}
-
-func (_c *MockCluster_Import_Call) Run(run func(ctx context.Context, nodeID int64, it *datapb.ImportTaskRequest)) *MockCluster_Import_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(int64), args[2].(*datapb.ImportTaskRequest))
-	})
-	return _c
-}
-
-func (_c *MockCluster_Import_Call) Return() *MockCluster_Import_Call {
-	_c.Call.Return()
-	return _c
-}
-
-func (_c *MockCluster_Import_Call) RunAndReturn(run func(context.Context, int64, *datapb.ImportTaskRequest)) *MockCluster_Import_Call {
 	_c.Call.Return(run)
 	return _c
 }

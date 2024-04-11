@@ -16,6 +16,7 @@ type RootCoordCatalog interface {
 	CreateDatabase(ctx context.Context, db *model.Database, ts typeutil.Timestamp) error
 	DropDatabase(ctx context.Context, dbID int64, ts typeutil.Timestamp) error
 	ListDatabases(ctx context.Context, ts typeutil.Timestamp) ([]*model.Database, error)
+	AlterDatabase(ctx context.Context, newDB *model.Database, ts typeutil.Timestamp) error
 
 	CreateCollection(ctx context.Context, collectionInfo *model.Collection, ts typeutil.Timestamp) error
 	GetCollectionByID(ctx context.Context, dbID int64, ts typeutil.Timestamp, collectionID typeutil.UniqueID) (*model.Collection, error)
@@ -152,7 +153,7 @@ type DataCoordCatalog interface {
 type QueryCoordCatalog interface {
 	SaveCollection(collection *querypb.CollectionLoadInfo, partitions ...*querypb.PartitionLoadInfo) error
 	SavePartition(info ...*querypb.PartitionLoadInfo) error
-	SaveReplica(replica *querypb.Replica) error
+	SaveReplica(replicas ...*querypb.Replica) error
 	GetCollections() ([]*querypb.CollectionLoadInfo, error)
 	GetPartitions() (map[int64][]*querypb.PartitionLoadInfo, error)
 	GetReplicas() ([]*querypb.Replica, error)
@@ -164,7 +165,7 @@ type QueryCoordCatalog interface {
 	RemoveResourceGroup(rgName string) error
 	GetResourceGroups() ([]*querypb.ResourceGroup, error)
 
-	SaveCollectionTarget(target *querypb.CollectionTarget) error
+	SaveCollectionTargets(target ...*querypb.CollectionTarget) error
 	RemoveCollectionTarget(collectionID int64) error
 	GetCollectionTargets() (map[int64]*querypb.CollectionTarget, error)
 }

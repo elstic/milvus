@@ -19,6 +19,7 @@
 #include "common/RangeSearchHelper.h"
 #include "common/Utils.h"
 #include "common/Tracer.h"
+#include "common/Types.h"
 #include "knowhere/comp/brute_force.h"
 #include "knowhere/comp/index_param.h"
 #include "knowhere/index_node.h"
@@ -32,14 +33,11 @@ CheckBruteForceSearchParam(const FieldMeta& field,
     auto data_type = field.get_data_type();
     auto& metric_type = search_info.metric_type_;
 
-    AssertInfo(datatype_is_vector(data_type),
+    AssertInfo(IsVectorDataType(data_type),
                "[BruteForceSearch] Data type isn't vector type");
-    bool is_float_data_type = (data_type == DataType::VECTOR_FLOAT ||
-                               data_type == DataType::VECTOR_FLOAT16 ||
-                               data_type == DataType::VECTOR_BFLOAT16 ||
-                               data_type == DataType::VECTOR_SPARSE_FLOAT);
+    bool is_float_vec_data_type = IsFloatVectorDataType(data_type);
     bool is_float_metric_type = IsFloatMetricType(metric_type);
-    AssertInfo(is_float_data_type == is_float_metric_type,
+    AssertInfo(is_float_vec_data_type == is_float_metric_type,
                "[BruteForceSearch] Data type and metric type miss-match");
 }
 
@@ -51,16 +49,15 @@ PrepareBFSearchParams(const SearchInfo& search_info) {
     search_cfg[knowhere::meta::TOPK] = search_info.topk_;
 
     // save trace context into search conf
-    // TODO caiyd: will enable this after adding switch for trace
-    // if (search_info.trace_ctx_.traceID != nullptr &&
-    //     search_info.trace_ctx_.spanID != nullptr) {
-    //     search_cfg[knowhere::meta::TRACE_ID] =
-    //         tracer::GetTraceIDAsHex(&search_info.trace_ctx_);
-    //     search_cfg[knowhere::meta::SPAN_ID] =
-    //         tracer::GetSpanIDAsHex(&search_info.trace_ctx_);
-    //     search_cfg[knowhere::meta::TRACE_FLAGS] =
-    //         search_info.trace_ctx_.traceFlags;
-    // }
+    if (search_info.trace_ctx_.traceID != nullptr &&
+        search_info.trace_ctx_.spanID != nullptr) {
+        search_cfg[knowhere::meta::TRACE_ID] =
+            tracer::GetTraceIDAsVector(&search_info.trace_ctx_);
+        search_cfg[knowhere::meta::SPAN_ID] =
+            tracer::GetSpanIDAsVector(&search_info.trace_ctx_);
+        search_cfg[knowhere::meta::TRACE_FLAGS] =
+            search_info.trace_ctx_.traceFlags;
+    }
 
     return search_cfg;
 }

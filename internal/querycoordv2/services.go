@@ -682,24 +682,65 @@ func (s *Server) LoadBalance(ctx context.Context, req *querypb.LoadBalanceReques
 		return merr.Status(errors.Wrap(err,
 			fmt.Sprintf("can't balance, because the source node[%d] is invalid", srcNode))), nil
 	}
-	for _, dstNode := range req.GetDstNodeIDs() {
-		if !replica.Contains(dstNode) {
-			err := merr.WrapErrNodeNotFound(dstNode, "destination node not found in the same replica")
-			log.Warn("failed to balance to the destination node", zap.Error(err))
-			return merr.Status(err), nil
+
+	// when no dst node specified, default to use all other nodes in same
+	dstNodeSet := typeutil.NewUniqueSet()
+	if len(req.GetDstNodeIDs()) == 0 {
+		dstNodeSet.Insert(replica.GetNodes()...)
+	} else {
+		for _, dstNode := range req.GetDstNodeIDs() {
+			if !replica.Contains(dstNode) {
+				err := merr.WrapErrNodeNotFound(dstNode, "destination node not found in the same replica")
+				log.Warn("failed to balance to the destination node", zap.Error(err))
+				return merr.Status(err), nil
+			}
+			dstNodeSet.Insert(dstNode)
 		}
+	}
+
+	// check whether dstNode is healthy
+	for dstNode := range dstNodeSet {
 		if err := s.isStoppingNode(dstNode); err != nil {
 			return merr.Status(errors.Wrap(err,
 				fmt.Sprintf("can't balance, because the destination node[%d] is invalid", dstNode))), nil
 		}
 	}
 
-	err := s.balanceSegments(ctx, req, replica)
+	// check sealed segment list
+	segments := s.dist.SegmentDistManager.GetByFilter(meta.WithCollectionID(req.GetCollectionID()), meta.WithNodeID(srcNode))
+	segmentsMap := lo.SliceToMap(segments, func(s *meta.Segment) (int64, *meta.Segment) {
+		return s.GetID(), s
+	})
+
+	toBalance := typeutil.NewSet[*meta.Segment]()
+	if len(req.GetSealedSegmentIDs()) == 0 {
+		toBalance.Insert(segments...)
+	} else {
+		// check whether sealed segment exist
+		for _, segmentID := range req.GetSealedSegmentIDs() {
+			segment, ok := segmentsMap[segmentID]
+			if !ok {
+				err := merr.WrapErrSegmentNotFound(segmentID, "segment not found in source node")
+				return merr.Status(err), nil
+			}
+
+			// Only balance segments in targets
+			existInTarget := s.targetMgr.GetSealedSegment(segment.GetCollectionID(), segment.GetID(), meta.CurrentTarget) != nil
+			if !existInTarget {
+				log.Info("segment doesn't exist in current target, skip it", zap.Int64("segmentID", segmentID))
+				continue
+			}
+			toBalance.Insert(segment)
+		}
+	}
+
+	err := s.balanceSegments(ctx, replica.GetCollectionID(), replica, srcNode, dstNodeSet.Collect(), toBalance.Collect(), true, false)
 	if err != nil {
 		msg := "failed to balance segments"
 		log.Warn(msg, zap.Error(err))
 		return merr.Status(errors.Wrap(err, msg)), nil
 	}
+
 	return merr.Success(), nil
 }
 
@@ -856,7 +897,7 @@ func (s *Server) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeade
 		return resp, nil
 	}
 	collection := s.meta.CollectionManager.GetCollection(req.GetCollectionID())
-	if collection.GetStatus() == querypb.LoadStatus_Loaded {
+	if collection != nil && collection.GetStatus() == querypb.LoadStatus_Loaded {
 		// when collection is loaded, regard collection as readable, set percentage == 100
 		percentage = 100
 	}
@@ -881,7 +922,7 @@ func (s *Server) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeade
 	for _, channel := range channels {
 		log := log.With(zap.String("channel", channel.GetChannelName()))
 
-		leaders := s.dist.LeaderViewManager.GetLeadersByShard(channel.GetChannelName())
+		leaders := s.dist.LeaderViewManager.GetByFilter(meta.WithChannelName2LeaderView(channel.GetChannelName()))
 
 		readableLeaders := make(map[int64]*meta.LeaderView)
 
@@ -913,8 +954,10 @@ func (s *Server) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeade
 		addrs := make([]string, 0, len(leaders))
 		for _, leader := range readableLeaders {
 			info := s.nodeMgr.Get(leader.ID)
-			ids = append(ids, info.ID())
-			addrs = append(addrs, info.Addr())
+			if info != nil {
+				ids = append(ids, info.ID())
+				addrs = append(addrs, info.Addr())
+			}
 		}
 
 		resp.Shards = append(resp.Shards, &querypb.ShardLeadersList{
@@ -1041,30 +1084,14 @@ func (s *Server) TransferNode(ctx context.Context, req *milvuspb.TransferNodeReq
 		return merr.Status(err), nil
 	}
 
-	replicasInSource := s.meta.ReplicaManager.GetByResourceGroup(req.GetSourceResourceGroup())
-	replicasInTarget := s.meta.ReplicaManager.GetByResourceGroup(req.GetTargetResourceGroup())
-	loadSameCollection := false
-	sameCollectionID := int64(0)
-	for _, r1 := range replicasInSource {
-		for _, r2 := range replicasInTarget {
-			if r1.GetCollectionID() == r2.GetCollectionID() {
-				loadSameCollection = true
-				sameCollectionID = r1.GetCollectionID()
-			}
-		}
-	}
-	if loadSameCollection {
-		err := merr.WrapErrParameterInvalid("resource groups load not the same collection", fmt.Sprintf("collection %d loaded for both", sameCollectionID))
-		return merr.Status(err), nil
-	}
-
-	nodes, err := s.meta.ResourceManager.TransferNode(req.GetSourceResourceGroup(), req.GetTargetResourceGroup(), int(req.GetNumNode()))
+	// Move node from source resource group to target resource group.
+	_, err := s.meta.ResourceManager.TransferNode(req.GetSourceResourceGroup(), req.GetTargetResourceGroup(), int(req.GetNumNode()))
 	if err != nil {
 		log.Warn("failed to transfer node", zap.Error(err))
 		return merr.Status(err), nil
 	}
-
-	utils.AddNodesToCollectionsInRG(s.meta, req.GetTargetResourceGroup(), nodes...)
+	// Recover all replica on the source and target resource group.
+	utils.RecoverAllCollection(s.meta)
 
 	return merr.Success(), nil
 }
@@ -1082,6 +1109,7 @@ func (s *Server) TransferReplica(ctx context.Context, req *querypb.TransferRepli
 		return merr.Status(err), nil
 	}
 
+	// TODO: !!!WARNING, replica manager and resource manager doesn't protected with each other by lock.
 	if ok := s.meta.ResourceManager.ContainResourceGroup(req.GetSourceResourceGroup()); !ok {
 		err := merr.WrapErrResourceGroupNotFound(req.GetSourceResourceGroup())
 		return merr.Status(errors.Wrap(err,
@@ -1099,50 +1127,9 @@ func (s *Server) TransferReplica(ctx context.Context, req *querypb.TransferRepli
 		return merr.Status(err), nil
 	}
 
-	replicas := s.meta.ReplicaManager.GetByCollectionAndRG(req.GetCollectionID(), req.GetSourceResourceGroup())
-	if len(replicas) < int(req.GetNumReplica()) {
-		err := merr.WrapErrParameterInvalid("NumReplica not greater than the number of replica in source resource group", fmt.Sprintf("only found [%d] replicas in source resource group[%s]",
-			len(replicas), req.GetSourceResourceGroup()))
-		return merr.Status(err), nil
-	}
-
-	replicas = s.meta.ReplicaManager.GetByCollectionAndRG(req.GetCollectionID(), req.GetTargetResourceGroup())
-	if len(replicas) > 0 {
-		err := merr.WrapErrParameterInvalid("no same collection in target resource group", fmt.Sprintf("found [%d] replicas of same collection in target resource group[%s], dynamically increase replica num is unsupported",
-			len(replicas), req.GetTargetResourceGroup()))
-		return merr.Status(err), nil
-	}
-
-	replicas = s.meta.ReplicaManager.GetByCollection(req.GetCollectionID())
-	if (req.GetSourceResourceGroup() == meta.DefaultResourceGroupName || req.GetTargetResourceGroup() == meta.DefaultResourceGroupName) &&
-		len(replicas) != int(req.GetNumReplica()) {
-		err := merr.WrapErrParameterInvalid("tranfer all replicas from/to default resource group",
-			fmt.Sprintf("try to transfer %d replicas from/to but %d replicas exist", req.GetNumReplica(), len(replicas)))
-		return merr.Status(err), nil
-	}
-
-	err := s.transferReplica(req.GetTargetResourceGroup(), replicas[:req.GetNumReplica()])
-	if err != nil {
-		return merr.Status(err), nil
-	}
-
-	return merr.Success(), nil
-}
-
-func (s *Server) transferReplica(targetRG string, replicas []*meta.Replica) error {
-	ret := make([]*meta.Replica, 0)
-	for _, replica := range replicas {
-		newReplica := replica.Clone()
-		newReplica.ResourceGroup = targetRG
-
-		ret = append(ret, newReplica)
-	}
-	err := utils.AssignNodesToReplicas(s.meta, targetRG, ret...)
-	if err != nil {
-		return err
-	}
-
-	return s.meta.ReplicaManager.Put(ret...)
+	// Apply change into replica manager.
+	err := s.meta.TransferReplica(req.GetCollectionID(), req.GetSourceResourceGroup(), req.GetTargetResourceGroup(), int(req.GetNumReplica()))
+	return merr.Status(err), nil
 }
 
 func (s *Server) ListResourceGroups(ctx context.Context, req *milvuspb.ListResourceGroupsRequest) (*milvuspb.ListResourceGroupsResponse, error) {

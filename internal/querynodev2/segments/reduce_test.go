@@ -60,7 +60,7 @@ func (suite *ReduceSuite) SetupTest() {
 	msgLength := 100
 
 	suite.rootPath = suite.T().Name()
-	chunkManagerFactory := NewTestChunkManagerFactory(paramtable.Get(), suite.rootPath)
+	chunkManagerFactory := storage.NewTestChunkManagerFactory(paramtable.Get(), suite.rootPath)
 	suite.chunkManager, _ = chunkManagerFactory.NewPersistentStorageChunkManager(ctx)
 	initcore.InitRemoteChunkManager(paramtable.Get())
 
@@ -71,8 +71,9 @@ func (suite *ReduceSuite) SetupTest() {
 	suite.collection = NewCollection(suite.collectionID,
 		schema,
 		GenTestIndexMeta(suite.collectionID, schema),
-		querypb.LoadType_LoadCollection,
-	)
+		&querypb.LoadMetaInfo{
+			LoadType: querypb.LoadType_LoadCollection,
+		})
 	suite.segment, err = NewSegment(ctx,
 		suite.collection,
 		SegmentTypeSealed,

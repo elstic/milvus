@@ -541,13 +541,6 @@ func (suite *ServiceSuite) TestTransferNode() {
 		},
 		typeutil.NewUniqueSet(),
 	))
-	resp, err = server.TransferNode(ctx, &milvuspb.TransferNodeRequest{
-		SourceResourceGroup: "rg1",
-		TargetResourceGroup: "rg2",
-		NumNode:             1,
-	})
-	suite.NoError(err)
-	suite.Equal(commonpb.ErrorCode_IllegalArgument, resp.ErrorCode)
 
 	// test transfer node meet non-exist source rg
 	resp, err = server.TransferNode(ctx, &milvuspb.TransferNodeRequest{
@@ -745,7 +738,8 @@ func (suite *ServiceSuite) TestTransferReplica() {
 		NumReplica:          1,
 	})
 	suite.NoError(err)
-	suite.Contains(resp.Reason, "dynamically increase replica num is unsupported")
+	// we support dynamically increase replica num in resource group now.
+	suite.Equal(resp.ErrorCode, commonpb.ErrorCode_Success)
 
 	resp, err = suite.server.TransferReplica(ctx, &querypb.TransferReplicaRequest{
 		SourceResourceGroup: meta.DefaultResourceGroupName,
@@ -754,14 +748,24 @@ func (suite *ServiceSuite) TestTransferReplica() {
 		NumReplica:          1,
 	})
 	suite.NoError(err)
-	suite.ErrorIs(merr.Error(resp), merr.ErrParameterInvalid)
+	// we support transfer replica to resource group load same collection.
+	suite.Equal(resp.ErrorCode, commonpb.ErrorCode_Success)
 
 	replicaNum := len(suite.server.meta.ReplicaManager.GetByCollection(1))
+	suite.Equal(3, replicaNum)
 	resp, err = suite.server.TransferReplica(ctx, &querypb.TransferReplicaRequest{
 		SourceResourceGroup: meta.DefaultResourceGroupName,
 		TargetResourceGroup: "rg3",
 		CollectionID:        1,
-		NumReplica:          int64(replicaNum),
+		NumReplica:          2,
+	})
+	suite.NoError(err)
+	suite.Equal(resp.ErrorCode, commonpb.ErrorCode_Success)
+	resp, err = suite.server.TransferReplica(ctx, &querypb.TransferReplicaRequest{
+		SourceResourceGroup: "rg1",
+		TargetResourceGroup: "rg3",
+		CollectionID:        1,
+		NumReplica:          1,
 	})
 	suite.NoError(err)
 	suite.Equal(resp.ErrorCode, commonpb.ErrorCode_Success)
@@ -1174,6 +1178,51 @@ func (suite *ServiceSuite) TestLoadBalance() {
 	suite.Equal(resp.GetCode(), merr.Code(merr.ErrServiceNotReady))
 }
 
+func (suite *ServiceSuite) TestLoadBalanceWithNoDstNode() {
+	suite.loadAll()
+	ctx := context.Background()
+	server := suite.server
+
+	// Test get balance first segment
+	for _, collection := range suite.collections {
+		replicas := suite.meta.ReplicaManager.GetByCollection(collection)
+		nodes := replicas[0].GetNodes()
+		srcNode := nodes[0]
+		suite.updateCollectionStatus(collection, querypb.LoadStatus_Loaded)
+		suite.updateSegmentDist(collection, srcNode)
+		segments := suite.getAllSegments(collection)
+		req := &querypb.LoadBalanceRequest{
+			CollectionID:     collection,
+			SourceNodeIDs:    []int64{srcNode},
+			SealedSegmentIDs: segments,
+		}
+		suite.taskScheduler.ExpectedCalls = make([]*mock.Call, 0)
+		suite.taskScheduler.EXPECT().Add(mock.Anything).Run(func(task task.Task) {
+			actions := task.Actions()
+			suite.Len(actions, 2)
+			growAction, reduceAction := actions[0], actions[1]
+			suite.Contains(nodes, growAction.Node())
+			suite.Equal(srcNode, reduceAction.Node())
+			task.Cancel(nil)
+		}).Return(nil)
+		resp, err := server.LoadBalance(ctx, req)
+		suite.NoError(err)
+		suite.Equal(commonpb.ErrorCode_Success, resp.ErrorCode)
+		suite.taskScheduler.AssertExpectations(suite.T())
+	}
+
+	// Test when server is not healthy
+	server.UpdateStateCode(commonpb.StateCode_Initializing)
+	req := &querypb.LoadBalanceRequest{
+		CollectionID:  suite.collections[0],
+		SourceNodeIDs: []int64{1},
+		DstNodeIDs:    []int64{100 + 1},
+	}
+	resp, err := server.LoadBalance(ctx, req)
+	suite.NoError(err)
+	suite.Equal(resp.GetCode(), merr.Code(merr.ErrServiceNotReady))
+}
+
 func (suite *ServiceSuite) TestLoadBalanceWithEmptySegmentList() {
 	suite.loadAll()
 	ctx := context.Background()
@@ -1187,8 +1236,8 @@ func (suite *ServiceSuite) TestLoadBalanceWithEmptySegmentList() {
 	// update two collection's dist
 	for _, collection := range suite.collections {
 		replicas := suite.meta.ReplicaManager.GetByCollection(collection)
-		replicas[0].AddNode(srcNode)
-		replicas[0].AddNode(dstNode)
+		replicas[0].AddRWNode(srcNode)
+		replicas[0].AddRWNode(dstNode)
 		suite.updateCollectionStatus(collection, querypb.LoadStatus_Loaded)
 
 		for partition, segments := range suite.segments[collection] {
@@ -1213,8 +1262,8 @@ func (suite *ServiceSuite) TestLoadBalanceWithEmptySegmentList() {
 	defer func() {
 		for _, collection := range suite.collections {
 			replicas := suite.meta.ReplicaManager.GetByCollection(collection)
-			replicas[0].RemoveNode(srcNode)
-			replicas[0].RemoveNode(dstNode)
+			suite.meta.ReplicaManager.RemoveNode(replicas[0].GetID(), srcNode)
+			suite.meta.ReplicaManager.RemoveNode(replicas[0].GetID(), dstNode)
 		}
 		suite.nodeMgr.Remove(1001)
 		suite.nodeMgr.Remove(1002)
@@ -1332,7 +1381,7 @@ func (suite *ServiceSuite) TestLoadBalanceFailed() {
 		suite.Equal(commonpb.ErrorCode_UnexpectedError, resp.ErrorCode)
 		suite.Contains(resp.Reason, "mock error")
 
-		suite.meta.ReplicaManager.AddNode(replicas[0].ID, 10)
+		suite.meta.ReplicaManager.RecoverNodesInCollection(collection, map[string]typeutil.UniqueSet{meta.DefaultResourceGroupName: typeutil.NewUniqueSet(10)})
 		req.SourceNodeIDs = []int64{10}
 		resp, err = server.LoadBalance(ctx, req)
 		suite.NoError(err)
@@ -1354,7 +1403,7 @@ func (suite *ServiceSuite) TestLoadBalanceFailed() {
 		suite.NoError(err)
 		suite.Equal(commonpb.ErrorCode_UnexpectedError, resp.ErrorCode)
 		suite.nodeMgr.Remove(10)
-		suite.meta.ReplicaManager.RemoveNode(replicas[0].ID, 10)
+		suite.meta.ReplicaManager.RemoveNode(replicas[0].GetID(), 10)
 	}
 }
 
@@ -1652,8 +1701,8 @@ func (suite *ServiceSuite) TestHandleNodeUp() {
 	}))
 	server.handleNodeUp(111)
 	nodes := suite.server.meta.ReplicaManager.Get(1).GetNodes()
-	suite.Len(nodes, 1)
-	suite.Equal(int64(111), nodes[0])
+	nodesInRG, _ := suite.server.meta.ResourceManager.GetNodes(meta.DefaultResourceGroupName)
+	suite.ElementsMatch(nodes, nodesInRG)
 	log.Info("handleNodeUp")
 
 	// when more rg exist, new node shouldn't be assign to replica in default rg in handleNodeUp
@@ -1665,9 +1714,8 @@ func (suite *ServiceSuite) TestHandleNodeUp() {
 	}))
 	server.handleNodeUp(222)
 	nodes = suite.server.meta.ReplicaManager.Get(1).GetNodes()
-	suite.Len(nodes, 2)
-	suite.Contains(nodes, int64(111))
-	suite.Contains(nodes, int64(222))
+	nodesInRG, _ = suite.server.meta.ResourceManager.GetNodes(meta.DefaultResourceGroupName)
+	suite.ElementsMatch(nodes, nodesInRG)
 }
 
 func (suite *ServiceSuite) loadAll() {

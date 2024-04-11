@@ -24,6 +24,7 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus/internal/querynodev2/segments/metricsutil"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/pkg/common"
 	"github.com/milvus-io/milvus/pkg/log"
@@ -90,6 +91,28 @@ func getPKsFromRowBasedInsertMsg(msg *msgstream.InsertMsg, schema *schemapb.Coll
 						return nil, fmt.Errorf("strconv wrong on get dim, err = %s", err)
 					}
 					offset += dim / 8
+					break
+				}
+			}
+		case schemapb.DataType_Float16Vector:
+			for _, t := range field.TypeParams {
+				if t.Key == common.DimKey {
+					dim, err := strconv.Atoi(t.Value)
+					if err != nil {
+						return nil, fmt.Errorf("strconv wrong on get dim, err = %s", err)
+					}
+					offset += dim * 2
+					break
+				}
+			}
+		case schemapb.DataType_BFloat16Vector:
+			for _, t := range field.TypeParams {
+				if t.Key == common.DimKey {
+					dim, err := strconv.Atoi(t.Value)
+					if err != nil {
+						return nil, fmt.Errorf("strconv wrong on get dim, err = %s", err)
+					}
+					offset += dim * 2
 					break
 				}
 			}
@@ -280,6 +303,10 @@ func fillFieldData(ctx context.Context, vcm storage.ChunkManager, dataPath strin
 		return fillBinVecFieldData(ctx, vcm, dataPath, fieldData, i, offset, endian)
 	case schemapb.DataType_FloatVector:
 		return fillFloatVecFieldData(ctx, vcm, dataPath, fieldData, i, offset, endian)
+	case schemapb.DataType_Float16Vector:
+		return fillFloatVecFieldData(ctx, vcm, dataPath, fieldData, i, offset, endian)
+	case schemapb.DataType_BFloat16Vector:
+		return fillFloatVecFieldData(ctx, vcm, dataPath, fieldData, i, offset, endian)
 	case schemapb.DataType_SparseFloatVector:
 		return fillSparseFloatVecFieldData(ctx, vcm, dataPath, fieldData, i, offset, endian)
 	case schemapb.DataType_Bool:
@@ -319,4 +346,12 @@ func mergeRequestCost(requestCosts []*internalpb.CostAggregation) *internalpb.Co
 func getIndexEngineVersion() (minimal, current int32) {
 	cMinimal, cCurrent := C.GetMinimalIndexVersion(), C.GetCurrentIndexVersion()
 	return int32(cMinimal), int32(cCurrent)
+}
+
+// getSegmentMetricLabel returns the label for segment metrics.
+func getSegmentMetricLabel(segment Segment) metricsutil.SegmentLabel {
+	return metricsutil.SegmentLabel{
+		DatabaseName:  segment.DatabaseName(),
+		ResourceGroup: segment.ResourceGroup(),
+	}
 }

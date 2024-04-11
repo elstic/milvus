@@ -20,6 +20,8 @@ package delegator
 import (
 	"context"
 	"fmt"
+	"path"
+	"strconv"
 	"sync"
 	"time"
 
@@ -42,6 +44,7 @@ import (
 	"github.com/milvus-io/milvus/internal/querynodev2/tsafe"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/streamrpc"
+	"github.com/milvus-io/milvus/pkg/common"
 	"github.com/milvus-io/milvus/pkg/log"
 	"github.com/milvus-io/milvus/pkg/metrics"
 	"github.com/milvus-io/milvus/pkg/mq/msgstream"
@@ -49,6 +52,7 @@ import (
 	"github.com/milvus-io/milvus/pkg/util/funcutil"
 	"github.com/milvus-io/milvus/pkg/util/lifetime"
 	"github.com/milvus-io/milvus/pkg/util/merr"
+	"github.com/milvus-io/milvus/pkg/util/metautil"
 	"github.com/milvus-io/milvus/pkg/util/paramtable"
 	"github.com/milvus-io/milvus/pkg/util/timerecord"
 	"github.com/milvus-io/milvus/pkg/util/tsoutil"
@@ -62,7 +66,6 @@ type ShardDelegator interface {
 	GetSegmentInfo(readable bool) (sealed []SnapshotItem, growing []SegmentEntry)
 	SyncDistribution(ctx context.Context, entries ...SegmentEntry)
 	Search(ctx context.Context, req *querypb.SearchRequest) ([]*internalpb.SearchResults, error)
-	HybridSearch(ctx context.Context, req *querypb.HybridSearchRequest) (*querypb.HybridSearchResult, error)
 	Query(ctx context.Context, req *querypb.QueryRequest) ([]*internalpb.RetrieveResults, error)
 	QueryStream(ctx context.Context, req *querypb.QueryRequest, srv streamrpc.QueryStreamServer) error
 	GetStatistics(ctx context.Context, req *querypb.GetStatisticsRequest) ([]*internalpb.GetStatisticsResponse, error)
@@ -75,6 +78,11 @@ type ShardDelegator interface {
 	ReleaseSegments(ctx context.Context, req *querypb.ReleaseSegmentsRequest, force bool) error
 	SyncTargetVersion(newVersion int64, growingInTarget []int64, sealedInTarget []int64, droppedInTarget []int64, checkpoint *msgpb.MsgPosition)
 	GetTargetVersion() int64
+
+	// manage exclude segments
+	AddExcludedSegments(excludeInfo map[int64]uint64)
+	VerifyExcludedSegments(segmentID int64, ts uint64) bool
+	TryCleanExcludedSegments(ts uint64)
 
 	// control
 	Serviceable() bool
@@ -115,7 +123,14 @@ type shardDelegator struct {
 	tsCond      *sync.Cond
 	latestTsafe *atomic.Uint64
 	// queryHook
-	queryHook optimizers.QueryHook
+	queryHook      optimizers.QueryHook
+	partitionStats map[UniqueID]*storage.PartitionStatsSnapshot
+	chunkManager   storage.ChunkManager
+
+	excludedSegments *ExcludedSegments
+	// cause growing segment meta has been stored in segmentManager/distribution/pkOracle/excludeSegments
+	// in order to make add/remove growing be atomic, need lock before modify these meta info
+	growingSegmentLock sync.RWMutex
 }
 
 // getLogger returns the zap logger with pre-defined shard attributes.
@@ -170,7 +185,6 @@ func (sd *shardDelegator) modifySearchRequest(req *querypb.SearchRequest, scope 
 	nodeReq.Scope = scope
 	nodeReq.Req.Base.TargetID = targetID
 	nodeReq.SegmentIDs = segmentIDs
-	nodeReq.FromShardLeader = true
 	nodeReq.DmlChannels = []string{sd.vchannelName}
 	return nodeReq
 }
@@ -180,7 +194,6 @@ func (sd *shardDelegator) modifyQueryRequest(req *querypb.QueryRequest, scope qu
 	nodeReq.Scope = scope
 	nodeReq.Req.Base.TargetID = targetID
 	nodeReq.SegmentIDs = segmentIDs
-	nodeReq.FromShardLeader = true
 	nodeReq.DmlChannels = []string{sd.vchannelName}
 	return nodeReq
 }
@@ -202,6 +215,10 @@ func (sd *shardDelegator) search(ctx context.Context, req *querypb.SearchRequest
 	if err != nil {
 		log.Warn("failed to optimize search params", zap.Error(err))
 		return nil, err
+	}
+	if paramtable.Get().QueryNodeCfg.EnableSegmentPrune.GetAsBool() {
+		PruneSegments(ctx, sd.partitionStats, req.GetReq(), nil, sd.collection.Schema(), sealed,
+			PruneInfo{filterRatio: paramtable.Get().QueryNodeCfg.DefaultSegmentFilterRatio.GetAsFloat()})
 	}
 
 	tasks, err := organizeSubTask(ctx, req, sealed, growing, sd, sd.modifySearchRequest)
@@ -267,113 +284,78 @@ func (sd *shardDelegator) Search(ctx context.Context, req *querypb.SearchRequest
 		return funcutil.SliceContain(existPartitions, segment.PartitionID)
 	})
 
+	if req.GetReq().GetIsAdvanced() {
+		futures := make([]*conc.Future[*internalpb.SearchResults], len(req.GetReq().GetSubReqs()))
+		for index, subReq := range req.GetReq().GetSubReqs() {
+			newRequest := &internalpb.SearchRequest{
+				Base:               req.GetReq().GetBase(),
+				ReqID:              req.GetReq().GetReqID(),
+				DbID:               req.GetReq().GetDbID(),
+				CollectionID:       req.GetReq().GetCollectionID(),
+				PartitionIDs:       subReq.GetPartitionIDs(),
+				Dsl:                subReq.GetDsl(),
+				PlaceholderGroup:   subReq.GetPlaceholderGroup(),
+				DslType:            subReq.GetDslType(),
+				SerializedExprPlan: subReq.GetSerializedExprPlan(),
+				OutputFieldsId:     req.GetReq().GetOutputFieldsId(),
+				MvccTimestamp:      req.GetReq().GetMvccTimestamp(),
+				GuaranteeTimestamp: req.GetReq().GetGuaranteeTimestamp(),
+				TimeoutTimestamp:   req.GetReq().GetTimeoutTimestamp(),
+				Nq:                 subReq.GetNq(),
+				Topk:               subReq.GetTopk(),
+				MetricType:         subReq.GetMetricType(),
+				IgnoreGrowing:      req.GetReq().GetIgnoreGrowing(),
+				Username:           req.GetReq().GetUsername(),
+				IsAdvanced:         false,
+			}
+			future := conc.Go(func() (*internalpb.SearchResults, error) {
+				searchReq := &querypb.SearchRequest{
+					Req:             newRequest,
+					DmlChannels:     req.GetDmlChannels(),
+					TotalChannelNum: req.GetTotalChannelNum(),
+				}
+				searchReq.Req.GuaranteeTimestamp = req.GetReq().GetGuaranteeTimestamp()
+				searchReq.Req.TimeoutTimestamp = req.GetReq().GetTimeoutTimestamp()
+				if searchReq.GetReq().GetMvccTimestamp() == 0 {
+					searchReq.GetReq().MvccTimestamp = tSafe
+				}
+
+				results, err := sd.search(ctx, searchReq, sealed, growing)
+				if err != nil {
+					return nil, err
+				}
+
+				return segments.ReduceSearchResults(ctx,
+					results,
+					searchReq.Req.GetNq(),
+					searchReq.Req.GetTopk(),
+					searchReq.Req.GetMetricType())
+			})
+			futures[index] = future
+		}
+
+		err = conc.AwaitAll(futures...)
+		if err != nil {
+			return nil, err
+		}
+		results := make([]*internalpb.SearchResults, len(futures))
+		for i, future := range futures {
+			result := future.Value()
+			if result.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
+				log.Debug("delegator hybrid search failed",
+					zap.String("reason", result.GetStatus().GetReason()))
+				return nil, merr.Error(result.GetStatus())
+			}
+			results[i] = result
+		}
+		var ret *internalpb.SearchResults
+		ret, err = segments.MergeToAdvancedResults(ctx, results)
+		if err != nil {
+			return nil, err
+		}
+		return []*internalpb.SearchResults{ret}, nil
+	}
 	return sd.search(ctx, req, sealed, growing)
-}
-
-// HybridSearch preforms hybrid search operation on shard.
-func (sd *shardDelegator) HybridSearch(ctx context.Context, req *querypb.HybridSearchRequest) (*querypb.HybridSearchResult, error) {
-	log := sd.getLogger(ctx)
-	if err := sd.lifetime.Add(lifetime.IsWorking); err != nil {
-		return nil, err
-	}
-	defer sd.lifetime.Done()
-
-	if !funcutil.SliceContain(req.GetDmlChannels(), sd.vchannelName) {
-		log.Warn("deletgator received hybrid search request not belongs to it",
-			zap.Strings("reqChannels", req.GetDmlChannels()),
-		)
-		return nil, fmt.Errorf("dml channel not match, delegator channel %s, search channels %v", sd.vchannelName, req.GetDmlChannels())
-	}
-
-	partitions := req.GetReq().GetPartitionIDs()
-	if !sd.collection.ExistPartition(partitions...) {
-		return nil, merr.WrapErrPartitionNotLoaded(partitions)
-	}
-
-	// wait tsafe
-	waitTr := timerecord.NewTimeRecorder("wait tSafe")
-	tSafe, err := sd.waitTSafe(ctx, req.Req.GuaranteeTimestamp)
-	if err != nil {
-		log.Warn("delegator hybrid search failed to wait tsafe", zap.Error(err))
-		return nil, err
-	}
-	if req.GetReq().GetMvccTimestamp() == 0 {
-		req.Req.MvccTimestamp = tSafe
-	}
-	metrics.QueryNodeSQLatencyWaitTSafe.WithLabelValues(
-		fmt.Sprint(paramtable.GetNodeID()), metrics.HybridSearchLabel).
-		Observe(float64(waitTr.ElapseSpan().Milliseconds()))
-
-	sealed, growing, version, err := sd.distribution.PinReadableSegments(req.GetReq().GetPartitionIDs()...)
-	if err != nil {
-		log.Warn("delegator failed to hybrid search, current distribution is not serviceable")
-		return nil, merr.WrapErrChannelNotAvailable(sd.vchannelName, "distribution is not servcieable")
-	}
-	defer sd.distribution.Unpin(version)
-	existPartitions := sd.collection.GetPartitions()
-	growing = lo.Filter(growing, func(segment SegmentEntry, _ int) bool {
-		return funcutil.SliceContain(existPartitions, segment.PartitionID)
-	})
-
-	futures := make([]*conc.Future[*internalpb.SearchResults], len(req.GetReq().GetReqs()))
-	for index := range req.GetReq().GetReqs() {
-		request := req.GetReq().Reqs[index]
-		future := conc.Go(func() (*internalpb.SearchResults, error) {
-			searchReq := &querypb.SearchRequest{
-				Req:             request,
-				DmlChannels:     req.GetDmlChannels(),
-				TotalChannelNum: req.GetTotalChannelNum(),
-				FromShardLeader: true,
-			}
-			searchReq.Req.GuaranteeTimestamp = req.GetReq().GetGuaranteeTimestamp()
-			searchReq.Req.TimeoutTimestamp = req.GetReq().GetTimeoutTimestamp()
-			if searchReq.GetReq().GetMvccTimestamp() == 0 {
-				searchReq.GetReq().MvccTimestamp = tSafe
-			}
-
-			results, err := sd.search(ctx, searchReq, sealed, growing)
-			if err != nil {
-				return nil, err
-			}
-
-			return segments.ReduceSearchResults(ctx,
-				results,
-				searchReq.Req.GetNq(),
-				searchReq.Req.GetTopk(),
-				searchReq.Req.GetMetricType())
-		})
-		futures[index] = future
-	}
-
-	err = conc.AwaitAll(futures...)
-	if err != nil {
-		return nil, err
-	}
-
-	ret := &querypb.HybridSearchResult{
-		Status:  merr.Success(),
-		Results: make([]*internalpb.SearchResults, len(futures)),
-	}
-
-	channelsMvcc := make(map[string]uint64)
-	for i, future := range futures {
-		result := future.Value()
-		if result.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
-			log.Debug("delegator hybrid search failed",
-				zap.String("reason", result.GetStatus().GetReason()))
-			return nil, merr.Error(result.GetStatus())
-		}
-
-		ret.Results[i] = result
-		for ch, ts := range result.GetChannelsMvcc() {
-			channelsMvcc[ch] = ts
-		}
-	}
-	ret.ChannelsMvcc = channelsMvcc
-
-	log.Debug("Delegator hybrid search done")
-
-	return ret, nil
 }
 
 func (sd *shardDelegator) QueryStream(ctx context.Context, req *querypb.QueryRequest, srv streamrpc.QueryStreamServer) error {
@@ -485,12 +467,17 @@ func (sd *shardDelegator) Query(ctx context.Context, req *querypb.QueryRequest) 
 		return nil, merr.WrapErrChannelNotAvailable(sd.vchannelName, "distribution is not servcieable")
 	}
 	defer sd.distribution.Unpin(version)
-	existPartitions := sd.collection.GetPartitions()
-	growing = lo.Filter(growing, func(segment SegmentEntry, _ int) bool {
-		return funcutil.SliceContain(existPartitions, segment.PartitionID)
-	})
 	if req.Req.IgnoreGrowing {
 		growing = []SegmentEntry{}
+	} else {
+		existPartitions := sd.collection.GetPartitions()
+		growing = lo.Filter(growing, func(segment SegmentEntry, _ int) bool {
+			return funcutil.SliceContain(existPartitions, segment.PartitionID)
+		})
+	}
+
+	if paramtable.Get().QueryNodeCfg.EnableSegmentPrune.GetAsBool() {
+		PruneSegments(ctx, sd.partitionStats, nil, req.GetReq(), sd.collection.Schema(), sealed, PruneInfo{paramtable.Get().QueryNodeCfg.DefaultSegmentFilterRatio.GetAsFloat()})
 	}
 
 	sealedNum := lo.SumBy(sealed, func(item SnapshotItem) int { return len(item.Segments) })
@@ -774,10 +761,72 @@ func (sd *shardDelegator) Close() {
 	sd.lifetime.Wait()
 }
 
+// As partition stats is an optimization for search/query which is not mandatory for milvus instance,
+// loading partitionStats will be a try-best process and will skip+logError when running across errors rather than
+// return an error status
+func (sd *shardDelegator) maybeReloadPartitionStats(ctx context.Context, partIDs ...UniqueID) {
+	var partsToReload []UniqueID
+	if len(partIDs) > 0 {
+		partsToReload = partIDs
+	} else {
+		partsToReload = append(partsToReload, sd.collection.GetPartitions()...)
+	}
+
+	colID := sd.Collection()
+	findMaxVersion := func(filePaths []string) (int64, string) {
+		maxVersion := int64(-1)
+		maxVersionFilePath := ""
+		for _, filePath := range filePaths {
+			versionStr := path.Base(filePath)
+			version, err := strconv.ParseInt(versionStr, 10, 64)
+			if err != nil {
+				continue
+			}
+			if version > maxVersion {
+				maxVersion = version
+				maxVersionFilePath = filePath
+			}
+		}
+		return maxVersion, maxVersionFilePath
+	}
+	for _, partID := range partsToReload {
+		idPath := metautil.JoinIDPath(colID, partID)
+		idPath = path.Join(idPath, sd.vchannelName)
+		statsPathPrefix := path.Join(sd.chunkManager.RootPath(), common.PartitionStatsPath, idPath)
+		filePaths, _, err := sd.chunkManager.ListWithPrefix(ctx, statsPathPrefix, true)
+		if err != nil {
+			log.Error("Skip initializing partition stats for failing to list files with prefix",
+				zap.String("statsPathPrefix", statsPathPrefix))
+			continue
+		}
+		maxVersion, maxVersionFilePath := findMaxVersion(filePaths)
+		if maxVersion < 0 {
+			log.Info("failed to find valid partition stats file for partition", zap.Int64("partitionID", partID))
+			continue
+		}
+		partStats, exists := sd.partitionStats[partID]
+		if !exists || (exists && partStats.GetVersion() < maxVersion) {
+			statsBytes, err := sd.chunkManager.Read(ctx, maxVersionFilePath)
+			if err != nil {
+				log.Error("failed to read stats file from object storage", zap.String("path", maxVersionFilePath))
+				continue
+			}
+			partStats, err := storage.DeserializePartitionsStatsSnapshot(statsBytes)
+			if err != nil {
+				log.Error("failed to parse partition stats from bytes", zap.Int("bytes_length", len(statsBytes)))
+				continue
+			}
+			sd.partitionStats[partID] = partStats
+			partStats.SetVersion(maxVersion)
+			log.Info("Updated partitionStats for partition", zap.Int64("partitionID", partID))
+		}
+	}
+}
+
 // NewShardDelegator creates a new ShardDelegator instance with all fields initialized.
 func NewShardDelegator(ctx context.Context, collectionID UniqueID, replicaID UniqueID, channel string, version int64,
 	workerManager cluster.Manager, manager *segments.Manager, tsafeManager tsafe.Manager, loader segments.Loader,
-	factory msgstream.Factory, startTs uint64, queryHook optimizers.QueryHook,
+	factory msgstream.Factory, startTs uint64, queryHook optimizers.QueryHook, chunkManager storage.ChunkManager,
 ) (ShardDelegator, error) {
 	log := log.Ctx(ctx).With(zap.Int64("collectionID", collectionID),
 		zap.Int64("replicaID", replicaID),
@@ -794,24 +843,29 @@ func NewShardDelegator(ctx context.Context, collectionID UniqueID, replicaID Uni
 	sizePerBlock := paramtable.Get().QueryNodeCfg.DeleteBufferBlockSize.GetAsInt64()
 	log.Info("Init delete cache with list delete buffer", zap.Int64("sizePerBlock", sizePerBlock), zap.Time("startTime", tsoutil.PhysicalTime(startTs)))
 
+	excludedSegments := NewExcludedSegments(paramtable.Get().QueryNodeCfg.CleanExcludeSegInterval.GetAsDuration(time.Second))
+
 	sd := &shardDelegator{
-		collectionID:    collectionID,
-		replicaID:       replicaID,
-		vchannelName:    channel,
-		version:         version,
-		collection:      collection,
-		segmentManager:  manager.Segment,
-		workerManager:   workerManager,
-		lifetime:        lifetime.NewLifetime(lifetime.Initializing),
-		distribution:    NewDistribution(),
-		level0Deletions: make(map[int64]*storage.DeleteData),
-		deleteBuffer:    deletebuffer.NewListDeleteBuffer[*deletebuffer.Item](startTs, sizePerBlock),
-		pkOracle:        pkoracle.NewPkOracle(),
-		tsafeManager:    tsafeManager,
-		latestTsafe:     atomic.NewUint64(startTs),
-		loader:          loader,
-		factory:         factory,
-		queryHook:       queryHook,
+		collectionID:     collectionID,
+		replicaID:        replicaID,
+		vchannelName:     channel,
+		version:          version,
+		collection:       collection,
+		segmentManager:   manager.Segment,
+		workerManager:    workerManager,
+		lifetime:         lifetime.NewLifetime(lifetime.Initializing),
+		distribution:     NewDistribution(),
+		level0Deletions:  make(map[int64]*storage.DeleteData),
+		deleteBuffer:     deletebuffer.NewListDeleteBuffer[*deletebuffer.Item](startTs, sizePerBlock),
+		pkOracle:         pkoracle.NewPkOracle(),
+		tsafeManager:     tsafeManager,
+		latestTsafe:      atomic.NewUint64(startTs),
+		loader:           loader,
+		factory:          factory,
+		queryHook:        queryHook,
+		chunkManager:     chunkManager,
+		partitionStats:   make(map[UniqueID]*storage.PartitionStatsSnapshot),
+		excludedSegments: excludedSegments,
 	}
 	m := sync.Mutex{}
 	sd.tsCond = sync.NewCond(&m)
@@ -819,5 +873,6 @@ func NewShardDelegator(ctx context.Context, collectionID UniqueID, replicaID Uni
 		go sd.watchTSafe()
 	}
 	log.Info("finish build new shardDelegator")
+	sd.maybeReloadPartitionStats(ctx)
 	return sd, nil
 }

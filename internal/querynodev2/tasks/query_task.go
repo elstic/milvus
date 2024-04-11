@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/samber/lo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
@@ -67,19 +68,23 @@ func (t *QueryTask) PreExecute() error {
 	// Update task wait time metric before execute
 	nodeID := strconv.FormatInt(paramtable.GetNodeID(), 10)
 	inQueueDuration := t.tr.ElapseSpan()
+	inQueueDurationMS := inQueueDuration.Seconds() * 1000
 
 	// Update in queue metric for prometheus.
 	metrics.QueryNodeSQLatencyInQueue.WithLabelValues(
 		nodeID,
-		metrics.QueryLabel).
-		Observe(float64(inQueueDuration.Milliseconds()))
+		metrics.QueryLabel,
+		t.collection.GetDBName(),
+		t.collection.GetResourceGroup(), // TODO: resource group and db name may be removed at runtime.
+		// should be refactor into metricsutil.observer in the future.
+	).Observe(inQueueDurationMS)
 
 	username := t.Username()
 	metrics.QueryNodeSQPerUserLatencyInQueue.WithLabelValues(
 		nodeID,
 		metrics.QueryLabel,
 		username).
-		Observe(float64(inQueueDuration.Milliseconds()))
+		Observe(inQueueDurationMS)
 
 	// Update collector for query node quota.
 	collector.Average.Add(metricsinfo.QueryQueueMetric, float64(inQueueDuration.Microseconds()))
@@ -125,6 +130,10 @@ func (t *QueryTask) Execute() error {
 		return err
 	}
 
+	relatedDataSize := lo.Reduce(querySegments, func(acc int64, seg segments.Segment, _ int) int64 {
+		return acc + seg.MemSize()
+	}, 0)
+
 	t.result = &internalpb.RetrieveResults{
 		Base: &commonpb.MsgBase{
 			SourceID: paramtable.GetNodeID(),
@@ -133,8 +142,10 @@ func (t *QueryTask) Execute() error {
 		Ids:        reducedResult.Ids,
 		FieldsData: reducedResult.FieldsData,
 		CostAggregation: &internalpb.CostAggregation{
-			ServiceTime: tr.ElapseSpan().Milliseconds(),
+			ServiceTime:          tr.ElapseSpan().Milliseconds(),
+			TotalRelatedDataSize: relatedDataSize,
 		},
+		AllRetrieveCount: reducedResult.GetAllRetrieveCount(),
 	}
 	return nil
 }

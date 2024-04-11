@@ -32,61 +32,6 @@ func (_m *MockDataNode) EXPECT() *MockDataNode_Expecter {
 	return &MockDataNode_Expecter{mock: &_m.Mock}
 }
 
-// AddImportSegment provides a mock function with given fields: _a0, _a1
-func (_m *MockDataNode) AddImportSegment(_a0 context.Context, _a1 *datapb.AddImportSegmentRequest) (*datapb.AddImportSegmentResponse, error) {
-	ret := _m.Called(_a0, _a1)
-
-	var r0 *datapb.AddImportSegmentResponse
-	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, *datapb.AddImportSegmentRequest) (*datapb.AddImportSegmentResponse, error)); ok {
-		return rf(_a0, _a1)
-	}
-	if rf, ok := ret.Get(0).(func(context.Context, *datapb.AddImportSegmentRequest) *datapb.AddImportSegmentResponse); ok {
-		r0 = rf(_a0, _a1)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*datapb.AddImportSegmentResponse)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(context.Context, *datapb.AddImportSegmentRequest) error); ok {
-		r1 = rf(_a0, _a1)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// MockDataNode_AddImportSegment_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'AddImportSegment'
-type MockDataNode_AddImportSegment_Call struct {
-	*mock.Call
-}
-
-// AddImportSegment is a helper method to define mock.On call
-//   - _a0 context.Context
-//   - _a1 *datapb.AddImportSegmentRequest
-func (_e *MockDataNode_Expecter) AddImportSegment(_a0 interface{}, _a1 interface{}) *MockDataNode_AddImportSegment_Call {
-	return &MockDataNode_AddImportSegment_Call{Call: _e.mock.On("AddImportSegment", _a0, _a1)}
-}
-
-func (_c *MockDataNode_AddImportSegment_Call) Run(run func(_a0 context.Context, _a1 *datapb.AddImportSegmentRequest)) *MockDataNode_AddImportSegment_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(*datapb.AddImportSegmentRequest))
-	})
-	return _c
-}
-
-func (_c *MockDataNode_AddImportSegment_Call) Return(_a0 *datapb.AddImportSegmentResponse, _a1 error) *MockDataNode_AddImportSegment_Call {
-	_c.Call.Return(_a0, _a1)
-	return _c
-}
-
-func (_c *MockDataNode_AddImportSegment_Call) RunAndReturn(run func(context.Context, *datapb.AddImportSegmentRequest) (*datapb.AddImportSegmentResponse, error)) *MockDataNode_AddImportSegment_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
 // CheckChannelOperationProgress provides a mock function with given fields: _a0, _a1
 func (_m *MockDataNode) CheckChannelOperationProgress(_a0 context.Context, _a1 *datapb.ChannelWatchInfo) (*datapb.ChannelOperationProgressResponse, error) {
 	ret := _m.Called(_a0, _a1)
@@ -701,61 +646,6 @@ func (_c *MockDataNode_GetStatisticsChannel_Call) Return(_a0 *milvuspb.StringRes
 }
 
 func (_c *MockDataNode_GetStatisticsChannel_Call) RunAndReturn(run func(context.Context, *internalpb.GetStatisticsChannelRequest) (*milvuspb.StringResponse, error)) *MockDataNode_GetStatisticsChannel_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
-// Import provides a mock function with given fields: _a0, _a1
-func (_m *MockDataNode) Import(_a0 context.Context, _a1 *datapb.ImportTaskRequest) (*commonpb.Status, error) {
-	ret := _m.Called(_a0, _a1)
-
-	var r0 *commonpb.Status
-	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, *datapb.ImportTaskRequest) (*commonpb.Status, error)); ok {
-		return rf(_a0, _a1)
-	}
-	if rf, ok := ret.Get(0).(func(context.Context, *datapb.ImportTaskRequest) *commonpb.Status); ok {
-		r0 = rf(_a0, _a1)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*commonpb.Status)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(context.Context, *datapb.ImportTaskRequest) error); ok {
-		r1 = rf(_a0, _a1)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// MockDataNode_Import_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Import'
-type MockDataNode_Import_Call struct {
-	*mock.Call
-}
-
-// Import is a helper method to define mock.On call
-//   - _a0 context.Context
-//   - _a1 *datapb.ImportTaskRequest
-func (_e *MockDataNode_Expecter) Import(_a0 interface{}, _a1 interface{}) *MockDataNode_Import_Call {
-	return &MockDataNode_Import_Call{Call: _e.mock.On("Import", _a0, _a1)}
-}
-
-func (_c *MockDataNode_Import_Call) Run(run func(_a0 context.Context, _a1 *datapb.ImportTaskRequest)) *MockDataNode_Import_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(*datapb.ImportTaskRequest))
-	})
-	return _c
-}
-
-func (_c *MockDataNode_Import_Call) Return(_a0 *commonpb.Status, _a1 error) *MockDataNode_Import_Call {
-	_c.Call.Return(_a0, _a1)
-	return _c
-}
-
-func (_c *MockDataNode_Import_Call) RunAndReturn(run func(context.Context, *datapb.ImportTaskRequest) (*commonpb.Status, error)) *MockDataNode_Import_Call {
 	_c.Call.Return(run)
 	return _c
 }

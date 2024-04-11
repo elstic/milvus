@@ -19,6 +19,8 @@ from base.schema_wrapper import ApiCollectionSchemaWrapper, ApiFieldSchemaWrappe
 from common import common_type as ct
 from utils.util_log import test_log as log
 from customize.milvus_operator import MilvusOperator
+import pickle
+import tensorflow as tf
 fake = Faker()
 """" Methods of processing data """
 
@@ -337,19 +339,25 @@ def gen_multiple_json_default_collection_schema(description=ct.default_desc, pri
 def gen_collection_schema_all_datatype(description=ct.default_desc,
                                        primary_field=ct.default_int64_field_name,
                                        auto_id=False, dim=ct.default_dim,
-                                       enable_dynamic_field=False, with_json=True, **kwargs):
+                                       enable_dynamic_field=False, with_json=True, multiple_dim_array=[], **kwargs):
     if enable_dynamic_field:
-        fields = [gen_int64_field(), gen_float_vec_field(dim=dim),
-                  gen_float_vec_field(name=ct.default_float16_vec_field_name, dim=dim, vector_data_type="FLOAT16_VECTOR"),
-                  gen_float_vec_field(name=ct.default_bfloat16_vec_field_name, dim=dim, vector_data_type="BFLOAT16_VECTOR")]
+        fields = [gen_int64_field()]
     else:
         fields = [gen_int64_field(), gen_int32_field(), gen_int16_field(), gen_int8_field(),
                   gen_bool_field(), gen_float_field(), gen_double_field(), gen_string_field(),
-                  gen_json_field(), gen_float_vec_field(dim=dim),
-                  gen_float_vec_field(name=ct.default_float16_vec_field_name, dim=dim, vector_data_type="FLOAT16_VECTOR"),
-                  gen_float_vec_field(name=ct.default_bfloat16_vec_field_name, dim=dim, vector_data_type="BFLOAT16_VECTOR")]
+                  gen_json_field()]
         if with_json is False:
             fields.remove(gen_json_field())
+
+    if len(multiple_dim_array) == 0:
+        fields.append(gen_float_vec_field(dim=dim))
+    else:
+        multiple_dim_array.insert(0, dim)
+        for i in range(len(multiple_dim_array)):
+            fields.append(gen_float_vec_field(name=f"multiple_vector_{ct.vector_data_type_all[i%3]}",
+                                              dim=multiple_dim_array[i],
+                                              vector_data_type=ct.vector_data_type_all[i%3]))
+
     schema, _ = ApiCollectionSchemaWrapper().init_collection_schema(fields=fields, description=description,
                                                                     primary_field=primary_field, auto_id=auto_id,
                                                                     enable_dynamic_field=enable_dynamic_field, **kwargs)
@@ -391,11 +399,20 @@ def gen_schema_multi_string_fields(string_fields):
 
 def gen_vectors(nb, dim, vector_data_type="FLOAT_VECTOR"):
     if vector_data_type == "FLOAT_VECTOR":
+        start = time.time()
         vectors = [[random.random() for _ in range(dim)] for _ in range(nb)]
+        end = time.time() - start
+        log.debug(f'FLOAT_VECTOR: {end}')
     elif vector_data_type == "FLOAT16_VECTOR":
+        start = time.time()
         vectors = gen_fp16_vectors(nb, dim)[1]
+        end = time.time() - start
+        log.debug(f'FLOAT16_VECTOR: {end}')
     elif vector_data_type == "BFLOAT16_VECTOR":
+        start = time.time()
         vectors = gen_bf16_vectors(nb, dim)[1]
+        end = time.time() - start
+        log.debug(f'BFLOAT16_VECTOR: {end}')
 
     if dim > 1:
         if vector_data_type=="FLOAT_VECTOR":
@@ -470,8 +487,34 @@ def gen_default_rows_data(nb=ct.default_nb, dim=ct.default_dim, start=0, with_js
             for i in range(len(multiple_dim_array)):
                 dict[multiple_vector_field_name[i]] = gen_vectors(1, multiple_dim_array[i],
                                                                   vector_data_type=vector_data_type)[0]
+    log.debug("generated default row data")
 
     return array
+
+
+def gen_json_data_for_diff_json_types(nb=ct.default_nb, start=0, json_type="json_embedded_object"):
+    """
+    Method: gen json data for different json types. Refer to RFC7159
+    """
+    if json_type == "json_embedded_object":                 # a json object with an embedd json object
+        return [{json_type: {"number": i, "level2": {"level2_number": i, "level2_float": i*1.0, "level2_str": str(i)}, "float": i*1.0}, "str": str(i)}
+                       for i in range(start, start + nb)]
+    if json_type == "json_objects_array":                   # a json-objects array with 2 json objects
+        return [[{"number": i, "level2": {"level2_number": i, "level2_float": i*1.0, "level2_str": str(i)}, "float": i*1.0, "str": str(i)},
+                 {"number": i, "level2": {"level2_number": i, "level2_float": i*1.0, "level2_str": str(i)}, "float": i*1.0, "str": str(i)}
+                 ] for i in range(start, start + nb)]
+    if json_type == "json_array":                           # single array as json value
+        return [[i for i in range(j, j + 10)] for j in range(start, start + nb)]
+    if json_type == "json_int":                             # single int as json value
+        return [i for i in range(start, start + nb)]
+    if json_type == "json_float":                           # single float as json value
+        return [i*1.0 for i in range(start, start + nb)]
+    if json_type == "json_string":                          # single string as json value
+        return [str(i) for i in range(start, start + nb)]
+    if json_type == "json_bool":                            # single bool as json value
+        return [bool(i) for i in range(start, start + nb)]
+    else:
+        return []
 
 
 def gen_default_data_for_upsert(nb=ct.default_nb, dim=ct.default_dim, start=0, size=10000):
@@ -569,7 +612,8 @@ def gen_dataframe_multi_string_fields(string_fields, nb=ct.default_nb):
 
 
 def gen_dataframe_all_data_type(nb=ct.default_nb, dim=ct.default_dim, start=0, with_json=True,
-                                auto_id=False, random_primary_key=False):
+                                auto_id=False, random_primary_key=False, multiple_dim_array=[],
+                                multiple_vector_field_name=[]):
     if not random_primary_key:
         int64_values = pd.Series(data=[i for i in range(start, start + nb)])
     else:
@@ -584,8 +628,6 @@ def gen_dataframe_all_data_type(nb=ct.default_nb, dim=ct.default_dim, start=0, w
     json_values = [{"number": i, "string": str(i), "bool": bool(i),
                     "list": [j for j in range(i, i + ct.default_json_list_length)]} for i in range(start, start + nb)]
     float_vec_values = gen_vectors(nb, dim)
-    float16_vec_values = gen_vectors(nb, dim, "FLOAT16_VECTOR")
-    bfloat16_vec_values = gen_vectors(nb, dim, "BFLOAT16_VECTOR")
     df = pd.DataFrame({
         ct.default_int64_field_name: int64_values,
         ct.default_int32_field_name: int32_values,
@@ -595,20 +637,27 @@ def gen_dataframe_all_data_type(nb=ct.default_nb, dim=ct.default_dim, start=0, w
         ct.default_float_field_name: float_values,
         ct.default_double_field_name: double_values,
         ct.default_string_field_name: string_values,
-        ct.default_json_field_name: json_values,
-        ct.default_float_vec_field_name: float_vec_values,
-        ct.default_float16_vec_field_name: float16_vec_values,
-        ct.default_bfloat16_vec_field_name: bfloat16_vec_values
+        ct.default_json_field_name: json_values
     })
+
+    if len(multiple_dim_array) == 0:
+        df[ct.default_float_vec_field_name] = float_vec_values
+    else:
+        for i in range(len(multiple_dim_array)):
+            df[multiple_vector_field_name[i]] = gen_vectors(nb, multiple_dim_array[i], ct.vector_data_type_all[i%3])
+
     if with_json is False:
         df.drop(ct.default_json_field_name, axis=1, inplace=True)
     if auto_id:
         df.drop(ct.default_int64_field_name, axis=1, inplace=True)
+    log.debug("generated data completed")
 
     return df
 
 
-def gen_default_rows_data_all_data_type(nb=ct.default_nb, dim=ct.default_dim, start=0, with_json=True):
+def gen_default_rows_data_all_data_type(nb=ct.default_nb, dim=ct.default_dim, start=0, with_json=True,
+                                        multiple_dim_array=[],
+                                        multiple_vector_field_name=[], partition_id=0):
     array = []
     for i in range(start, start + nb):
         dict = {ct.default_int64_field_name: i,
@@ -620,14 +669,21 @@ def gen_default_rows_data_all_data_type(nb=ct.default_nb, dim=ct.default_dim, st
                 ct.default_double_field_name: i * 1.0,
                 ct.default_string_field_name: str(i),
                 ct.default_json_field_name: {"number": i, "string": str(i), "bool": bool(i),
-                                             "list": [j for j in range(i, i + ct.default_json_list_length)]},
-                ct.default_float_vec_field_name: gen_vectors(1, dim)[0],
-                ct.default_float16_vec_field_name: gen_vectors(1, dim, "FLOAT16_VECTOR")[0],
-                ct.default_bfloat16_vec_field_name: gen_vectors(1, dim, "BFLOAT16_VECTOR")[0]
+                                             "list": [j for j in range(i, i + ct.default_json_list_length)]}
                 }
         if with_json is False:
             dict.pop(ct.default_json_field_name, None)
         array.append(dict)
+        if len(multiple_dim_array) == 0:
+            dict[ct.default_float_vec_field_name] = gen_vectors(1, dim)[0]
+        else:
+            for i in range(len(multiple_dim_array)):
+                dict[multiple_vector_field_name[i]] = gen_vectors(nb, multiple_dim_array[i],
+                                                                  ct.vector_data_type_all[i])[0]
+
+    with open(ct.rows_all_data_type_file_path + f'_{partition_id}' + '.txt', 'wb') as json_file:
+        pickle.dump(array, json_file)
+    log.info("generated rows data")
 
     return array
 
@@ -1565,25 +1621,40 @@ def insert_data(collection_w, nb=ct.default_nb, is_binary=False, is_all_data_typ
     # prepare data
     for i in range(num):
         log.debug("Dynamic field is enabled: %s" % enable_dynamic_field)
-        if not enable_dynamic_field:
-            default_data = gen_default_dataframe_data(nb // num, dim=dim, start=start, with_json=with_json,
-                                                      random_primary_key=random_primary_key,
-                                                      multiple_dim_array=multiple_dim_array,
-                                                      multiple_vector_field_name=vector_name_list,
-                                                      vector_data_type=vector_data_type)
+        if not is_binary:
+            if not is_all_data_type:
+                if not enable_dynamic_field:
+                    default_data = gen_default_dataframe_data(nb // num, dim=dim, start=start, with_json=with_json,
+                                                              random_primary_key=random_primary_key,
+                                                              multiple_dim_array=multiple_dim_array,
+                                                              multiple_vector_field_name=vector_name_list,
+                                                              vector_data_type=vector_data_type)
+                else:
+                    default_data = gen_default_rows_data(nb // num, dim=dim, start=start, with_json=with_json,
+                                                         multiple_dim_array=multiple_dim_array,
+                                                         multiple_vector_field_name=vector_name_list,
+                                                         vector_data_type=vector_data_type)
+
+            else:
+                if not enable_dynamic_field:
+                    default_data = gen_dataframe_all_data_type(nb // num, dim=dim, start=start, with_json=with_json,
+                                                           random_primary_key=random_primary_key,
+                                                           multiple_dim_array=multiple_dim_array,
+                                                           multiple_vector_field_name=vector_name_list)
+                else:
+                    if os.path.exists(ct.rows_all_data_type_file_path + f'_{i}' + '.txt'):
+                        with open(ct.rows_all_data_type_file_path + f'_{i}' + '.txt', 'rb') as f:
+                            default_data = pickle.load(f)
+                    else:
+                        default_data = gen_default_rows_data_all_data_type(nb // num, dim=dim, start=start,
+                                                                           with_json=with_json,
+                                                                           multiple_dim_array=multiple_dim_array,
+                                                                           multiple_vector_field_name=vector_name_list,
+                                                                           partition_id = i)
         else:
-            default_data = gen_default_rows_data(nb // num, dim=dim, start=start, with_json=with_json,
-                                                 multiple_dim_array=multiple_dim_array,
-                                                 multiple_vector_field_name=vector_name_list,
-                                                 vector_data_type=vector_data_type)
-        if is_binary:
             default_data, binary_raw_data = gen_default_binary_dataframe_data(nb // num, dim=dim, start=start)
             binary_raw_vectors.extend(binary_raw_data)
-        if is_all_data_type:
-            default_data = gen_dataframe_all_data_type(nb // num, dim=dim, start=start, with_json=with_json,
-                                                       random_primary_key=random_primary_key)
-            if enable_dynamic_field:
-                default_data = gen_default_rows_data_all_data_type(nb // num, dim=dim, start=start, with_json=with_json)
+
         if auto_id:
             if enable_dynamic_field:
                 for data in default_data:
@@ -1598,7 +1669,7 @@ def insert_data(collection_w, nb=ct.default_nb, is_binary=False, is_all_data_typ
                     default_data.drop(ct.default_string_field_name, axis=1, inplace=True)
         # insert
         insert_res = collection_w.insert(default_data, par[i].name)[0]
-        log.info(f"inserted {nb} data into collection {collection_w.name}")
+        log.info(f"inserted {nb // num} data into collection {collection_w.name}")
         time_stamp = insert_res.timestamp
         insert_ids.extend(insert_res.primary_keys)
         vectors.append(default_data)
@@ -1765,26 +1836,72 @@ def extract_vector_field_name_list(collection_w):
 
     return vector_name_list
 
+def get_activate_func_from_metric_type(metric_type):
+    activate_function = lambda x: x
+    if metric_type == "COSINE":
+        activate_function = lambda x: (1 + x) * 0.5
+    elif metric_type == "IP":
+        activate_function = lambda x: 0.5 + math.atan(x)/ math.pi
+    else:
+        activate_function  = lambda x: 1.0 - 2*math.atan(x) / math.pi
+    return activate_function
 
-def get_hybrid_search_base_results(search_res_dict_array):
+def get_hybrid_search_base_results_rrf(search_res_dict_array, round_decimal=-1):
     """
     merge the element in the dicts array
     search_res_dict_array : the dict array in which the elements to be merged
     return: the sorted id and score answer
     """
     # calculate hybrid search base line
+
     search_res_dict_merge = {}
     ids_answer = []
     score_answer = []
-    for i in range(len(search_res_dict_array) - 1):
-        for key in search_res_dict_array[i]:
-            if search_res_dict_array[i + 1].get(key):
-                search_res_dict_merge[key] = search_res_dict_array[i][key] + search_res_dict_array[i + 1][key]
-            else:
-                search_res_dict_merge[key] = search_res_dict_array[i][key]
-        for key in search_res_dict_array[i + 1]:
-            if not search_res_dict_array[i].get(key):
-                search_res_dict_merge[key] = search_res_dict_array[i + 1][key]
+
+    for i, result in enumerate(search_res_dict_array, 0):
+        for key, distance in result.items():
+            search_res_dict_merge[key] = search_res_dict_merge.get(key, 0) + distance
+
+    if round_decimal != -1 :
+        for k, v in search_res_dict_merge.items():
+            multiplier = math.pow(10.0, round_decimal)
+            v = math.floor(v*multiplier+0.5) / multiplier
+            search_res_dict_merge[k] = v
+
+    sorted_list = sorted(search_res_dict_merge.items(), key=lambda x: x[1], reverse=True)
+
+    for sort in sorted_list:
+        ids_answer.append(int(sort[0]))
+        score_answer.append(float(sort[1]))
+
+    return ids_answer, score_answer
+
+
+def get_hybrid_search_base_results(search_res_dict_array, weights, metric_types, round_decimal=-1):
+    """
+    merge the element in the dicts array
+    search_res_dict_array : the dict array in which the elements to be merged
+    return: the sorted id and score answer
+    """
+    # calculate hybrid search base line
+
+    search_res_dict_merge = {}
+    ids_answer = []
+    score_answer = []
+
+    for i, result in enumerate(search_res_dict_array, 0):
+        activate_function = get_activate_func_from_metric_type(metric_types[i])
+        for key, distance in result.items():
+            activate_distance = activate_function(distance)
+            weight = weights[i]
+            search_res_dict_merge[key] = search_res_dict_merge.get(key, 0) + activate_function(distance) * weights[i]
+
+    if round_decimal != -1 :
+        for k, v in search_res_dict_merge.items():
+            multiplier = math.pow(10.0, round_decimal)
+            v = math.floor(v*multiplier+0.5) / multiplier
+            search_res_dict_merge[k] = v
+
     sorted_list = sorted(search_res_dict_merge.items(), key=lambda x: x[1], reverse=True)
 
     for sort in sorted_list:
@@ -1806,8 +1923,9 @@ def gen_bf16_vectors(num, dim):
     for _ in range(num):
         raw_vector = [random.random() for _ in range(dim)]
         raw_vectors.append(raw_vector)
-        bf16_vector = np.array(jnp.array(raw_vector, dtype=jnp.bfloat16)).view(np.uint8).tolist()
+        bf16_vector = tf.cast(raw_vector, dtype=tf.bfloat16).numpy().view(np.uint8).tolist()
         bf16_vectors.append(bytes(bf16_vector))
+    return raw_vectors, bf16_vectors
 
     return raw_vectors, bf16_vectors
 

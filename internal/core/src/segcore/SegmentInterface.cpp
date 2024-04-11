@@ -100,6 +100,7 @@ SegmentInternalInterface::Retrieve(const query::RetrievePlan* plan,
             fmt::format("query results exceed the limit size ", limit_size));
     }
 
+    results->set_all_retrieve_count(retrieve_results.total_data_cnt_);
     if (plan->plan_node_->is_count_) {
         AssertInfo(retrieve_results.field_data_.size() == 1,
                    "count result should only have one column");
@@ -217,7 +218,7 @@ SegmentInternalInterface::get_field_avg_size(FieldId field_id) const {
     auto data_type = field_meta.get_data_type();
 
     std::shared_lock lck(mutex_);
-    if (datatype_is_variable(data_type)) {
+    if (IsVariableDataType(data_type)) {
         if (variable_fields_avg_size_.find(field_id) ==
             variable_fields_avg_size_.end()) {
             return 0;
@@ -240,7 +241,7 @@ SegmentInternalInterface::set_field_avg_size(FieldId field_id,
     auto data_type = field_meta.get_data_type();
 
     std::unique_lock lck(mutex_);
-    if (datatype_is_variable(data_type)) {
+    if (IsVariableDataType(data_type)) {
         AssertInfo(num_rows > 0,
                    "The num rows of field data should be greater than 0");
         if (variable_fields_avg_size_.find(field_id) ==
@@ -267,11 +268,15 @@ SegmentInternalInterface::timestamp_filter(BitsetType& bitset,
 
     auto pilot = upper_bound(timestamps, 0, cnt, timestamp);
     // offset bigger than pilot should be filtered out.
-    for (int offset = pilot; offset < cnt; offset = bitset.find_next(offset)) {
-        if (offset == BitsetType::npos) {
+    auto offset = pilot;
+    while (offset < cnt) {
+        bitset[offset] = false;
+
+        const auto next_offset = bitset.find_next(offset);
+        if (!next_offset.has_value()) {
             return;
         }
-        bitset[offset] = false;
+        offset = next_offset.value();
     }
 }
 

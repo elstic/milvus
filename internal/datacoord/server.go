@@ -94,7 +94,7 @@ type rootCoordCreatorFunc func(ctx context.Context) (types.RootCoordClient, erro
 // makes sure Server implements `DataCoord`
 var _ types.DataCoord = (*Server)(nil)
 
-var Params *paramtable.ComponentParam = paramtable.Get()
+var Params = paramtable.Get()
 
 // Server implements `types.DataCoord`
 // handles Data Coordinator related jobs
@@ -159,6 +159,11 @@ type Server struct {
 
 	// manage ways that data coord access other coord
 	broker broker.Broker
+}
+
+type CollectionNameInfo struct {
+	CollectionName string
+	DBName         string
 }
 
 // ServerHelper datacoord server injection helper
@@ -257,25 +262,34 @@ func (s *Server) Register() error {
 	// first register indexCoord
 	s.icSession.Register()
 	s.session.Register()
-	if s.enableActiveStandBy {
-		err := s.session.ProcessActiveStandBy(s.activateFunc)
-		if err != nil {
-			return err
-		}
+	afterRegister := func() {
+		metrics.NumNodes.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), typeutil.DataCoordRole).Inc()
+		log.Info("DataCoord Register Finished")
 
-		err = s.icSession.ForceActiveStandby(nil)
-		if err != nil {
-			return nil
-		}
+		s.session.LivenessCheck(s.ctx, func() {
+			logutil.Logger(s.ctx).Error("disconnected from etcd and exited", zap.Int64("serverID", s.session.GetServerID()))
+			os.Exit(1)
+		})
+	}
+	if s.enableActiveStandBy {
+		go func() {
+			err := s.session.ProcessActiveStandBy(s.activateFunc)
+			if err != nil {
+				log.Error("failed to activate standby datacoord server", zap.Error(err))
+				return
+			}
+
+			err = s.icSession.ForceActiveStandby(nil)
+			if err != nil {
+				log.Error("failed to force activate standby indexcoord server", zap.Error(err))
+				return
+			}
+			afterRegister()
+		}()
+	} else {
+		afterRegister()
 	}
 
-	metrics.NumNodes.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), typeutil.DataCoordRole).Inc()
-	log.Info("DataCoord Register Finished")
-
-	s.session.LivenessCheck(s.serverLoopCtx, func() {
-		logutil.Logger(s.ctx).Error("disconnected from etcd and exited", zap.Int64("serverID", s.session.GetServerID()))
-		os.Exit(1)
-	})
 	return nil
 }
 
@@ -379,8 +393,8 @@ func (s *Server) initDataCoord() error {
 	if err != nil {
 		return err
 	}
-	s.importScheduler = NewImportScheduler(s.meta, s.cluster, s.allocator, s.importMeta)
-	s.importChecker = NewImportChecker(s.meta, s.broker, s.cluster, s.allocator, s.segmentManager, s.importMeta, s.buildIndexCh)
+	s.importScheduler = NewImportScheduler(s.meta, s.cluster, s.allocator, s.importMeta, s.buildIndexCh)
+	s.importChecker = NewImportChecker(s.meta, s.broker, s.cluster, s.allocator, s.segmentManager, s.importMeta)
 
 	s.serverLoopCtx, s.serverLoopCancel = context.WithCancel(s.ctx)
 
@@ -1201,6 +1215,7 @@ func (s *Server) loadCollectionFromRootCoord(ctx context.Context, collectionID i
 		StartPositions: resp.GetStartPositions(),
 		Properties:     properties,
 		CreatedAt:      resp.GetCreatedTimestamp(),
+		DatabaseName:   resp.GetDbName(),
 	}
 	s.meta.AddCollection(collInfo)
 	return nil

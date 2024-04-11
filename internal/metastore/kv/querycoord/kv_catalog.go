@@ -70,13 +70,17 @@ func (s Catalog) SavePartition(info ...*querypb.PartitionLoadInfo) error {
 	return nil
 }
 
-func (s Catalog) SaveReplica(replica *querypb.Replica) error {
-	key := encodeReplicaKey(replica.GetCollectionID(), replica.GetID())
-	value, err := proto.Marshal(replica)
-	if err != nil {
-		return err
+func (s Catalog) SaveReplica(replicas ...*querypb.Replica) error {
+	kvs := make(map[string]string)
+	for _, replica := range replicas {
+		key := encodeReplicaKey(replica.GetCollectionID(), replica.GetID())
+		value, err := proto.Marshal(replica)
+		if err != nil {
+			return err
+		}
+		kvs[key] = string(value)
 	}
-	return s.cli.Save(key, string(value))
+	return s.cli.MultiSave(kvs)
 }
 
 func (s Catalog) SaveResourceGroup(rgs ...*querypb.ResourceGroup) error {
@@ -241,16 +245,21 @@ func (s Catalog) ReleaseReplica(collection, replica int64) error {
 	return s.cli.Remove(key)
 }
 
-func (s Catalog) SaveCollectionTarget(target *querypb.CollectionTarget) error {
-	k := encodeCollectionTargetKey(target.GetCollectionID())
-	v, err := proto.Marshal(target)
-	if err != nil {
-		return err
+func (s Catalog) SaveCollectionTargets(targets ...*querypb.CollectionTarget) error {
+	kvs := make(map[string]string)
+	for _, target := range targets {
+		k := encodeCollectionTargetKey(target.GetCollectionID())
+		v, err := proto.Marshal(target)
+		if err != nil {
+			return err
+		}
+		var compressed bytes.Buffer
+		compressor.ZstdCompress(bytes.NewReader(v), io.Writer(&compressed), zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
+		kvs[k] = compressed.String()
 	}
+
 	// to reduce the target size, we do compress before write to etcd
-	var compressed bytes.Buffer
-	compressor.ZstdCompress(bytes.NewReader(v), io.Writer(&compressed), zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
-	err = s.cli.Save(k, compressed.String())
+	err := s.cli.MultiSave(kvs)
 	if err != nil {
 		return err
 	}
