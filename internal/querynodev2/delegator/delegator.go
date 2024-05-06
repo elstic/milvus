@@ -793,7 +793,7 @@ func (sd *shardDelegator) maybeReloadPartitionStats(ctx context.Context, partIDs
 		idPath := metautil.JoinIDPath(colID, partID)
 		idPath = path.Join(idPath, sd.vchannelName)
 		statsPathPrefix := path.Join(sd.chunkManager.RootPath(), common.PartitionStatsPath, idPath)
-		filePaths, _, err := sd.chunkManager.ListWithPrefix(ctx, statsPathPrefix, true)
+		filePaths, _, err := storage.ListAllChunkWithPrefix(ctx, sd.chunkManager, statsPathPrefix, true)
 		if err != nil {
 			log.Error("Skip initializing partition stats for failing to list files with prefix",
 				zap.String("statsPathPrefix", statsPathPrefix))
@@ -873,6 +873,8 @@ func NewShardDelegator(ctx context.Context, collectionID UniqueID, replicaID Uni
 		go sd.watchTSafe()
 	}
 	log.Info("finish build new shardDelegator")
-	sd.maybeReloadPartitionStats(ctx)
+	if paramtable.Get().QueryNodeCfg.EnableSegmentPrune.GetAsBool() {
+		sd.maybeReloadPartitionStats(ctx)
+	}
 	return sd, nil
 }

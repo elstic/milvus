@@ -258,15 +258,18 @@ func (rm *ResourceManager) TransferNode(sourceRGName string, targetRGName string
 	if sourceCfg.Requests.NodeNum < 0 {
 		sourceCfg.Requests.NodeNum = 0
 	}
+	// Special case for compatibility with old version.
+	if sourceRGName != DefaultResourceGroupName {
+		sourceCfg.Limits.NodeNum -= int32(nodeNum)
+		if sourceCfg.Limits.NodeNum < 0 {
+			sourceCfg.Limits.NodeNum = 0
+		}
+	}
+
 	targetCfg.Requests.NodeNum += int32(nodeNum)
 	if targetCfg.Requests.NodeNum > targetCfg.Limits.NodeNum {
 		targetCfg.Limits.NodeNum = targetCfg.Requests.NodeNum
 	}
-	// transfer node from source resource group to target resource group at high priority.
-	targetCfg.TransferFrom = append(targetCfg.TransferFrom, &rgpb.ResourceGroupTransfer{
-		ResourceGroup: sourceRGName,
-	})
-
 	return rm.updateResourceGroups(map[string]*rgpb.ResourceGroupConfig{
 		sourceRGName: sourceCfg,
 		targetRGName: targetCfg,
@@ -452,7 +455,14 @@ func (rm *ResourceManager) HandleNodeDown(node int64) {
 
 	// failure of node down can be ignored, node down can be done by `RemoveAllDownNode`.
 	rm.incomingNode.Remove(node)
+
+	// for stopping query node becomes offline, node change won't be triggered,
+	// cause when it becomes stopping, it already remove from resource manager
+	// then `unassignNode` will do nothing
 	rgName, err := rm.unassignNode(node)
+
+	// trigger node changes, expected to remove ro node from replica immediately
+	rm.nodeChangedNotifier.NotifyAll()
 	log.Info("HandleNodeDown: remove node from resource group",
 		zap.String("rgName", rgName),
 		zap.Int64("node", node),

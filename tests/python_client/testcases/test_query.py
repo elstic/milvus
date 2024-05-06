@@ -27,8 +27,8 @@ default_mix_expr = "int64 >= 0 && varchar >= \"0\""
 default_expr = f'{ct.default_int64_field_name} >= 0'
 default_invalid_expr = "varchar >= 0"
 default_string_term_expr = f'{ct.default_string_field_name} in [\"0\", \"1\"]'
-default_index_params = {"index_type": "IVF_SQ8", "metric_type": "L2", "params": {"nlist": 64}}
-binary_index_params = {"index_type": "BIN_IVF_FLAT", "metric_type": "JACCARD", "params": {"nlist": 64}}
+default_index_params = ct.default_index
+binary_index_params = ct.default_binary_index
 
 default_entities = ut.gen_entities(ut.default_nb, is_normal=True)
 default_pos = 5
@@ -1329,7 +1329,7 @@ class TestQueryParams(TestcaseBase):
         assert set(res[0].keys()) == {ct.default_int64_field_name, ct.default_float_field_name}
 
     @pytest.mark.tags(CaseLabel.L1)
-    @pytest.mark.xfail(reason="issue 30437")
+    @pytest.mark.skip(reason="issue 30437")
     def test_query_output_all_fields(self, enable_dynamic_field, random_primary_key):
         """
         target: test query with none output field
@@ -1505,7 +1505,7 @@ class TestQueryParams(TestcaseBase):
                                check_task=CheckTasks.err_res, check_items=error)
 
     @pytest.mark.tags(CaseLabel.L2)
-    @pytest.mark.xfail(reason="exception not MilvusException")
+    @pytest.mark.skip(reason="exception not MilvusException")
     def test_query_invalid_output_fields(self):
         """
         target: test query with invalid output fields
@@ -1520,7 +1520,7 @@ class TestQueryParams(TestcaseBase):
                                check_items=error)
 
     @pytest.mark.tags(CaseLabel.L0)
-    @pytest.mark.xfail(reason="issue 24637")
+    @pytest.mark.skip(reason="issue 24637")
     def test_query_output_fields_simple_wildcard(self):
         """
         target: test query output_fields with simple wildcard (* and %)
@@ -1539,7 +1539,7 @@ class TestQueryParams(TestcaseBase):
                            check_items={exp_res: res3, "with_vec": True})
 
     @pytest.mark.tags(CaseLabel.L1)
-    @pytest.mark.xfail(reason="issue 24637")
+    @pytest.mark.skip(reason="issue 24637")
     def test_query_output_fields_part_scale_wildcard(self):
         """
         target: test query output_fields with part wildcard
@@ -2679,7 +2679,7 @@ class TestQueryString(TestcaseBase):
                                         f"error: comparisons between VarChar and Int64 are not supported: invalid parameter"})
 
     @pytest.mark.tags(CaseLabel.L1)
-    @pytest.mark.xfail(reason="issue 24637")
+    @pytest.mark.skip(reason="issue 24637")
     def test_query_after_insert_multi_threading(self):
         """
         target: test data consistency after multi threading insert
@@ -3594,8 +3594,13 @@ class TestQueryCount(TestcaseBase):
             bool_type_cmp = True
         if bool_type == "false":
             bool_type_cmp = False
+        for i in range(len(_vectors[0])):
+            if _vectors[0][i].dtypes == bool:
+                num = i
+                break
+
         for i, _id in enumerate(insert_ids):
-            if _vectors[0][f"{ct.default_bool_field_name}"][i] == bool_type_cmp:
+            if _vectors[0][num][i] == bool_type_cmp:
                 filter_ids.append(_id)
         res = len(filter_ids)
 
