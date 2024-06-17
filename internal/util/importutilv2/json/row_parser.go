@@ -34,7 +34,7 @@ type RowParser interface {
 }
 
 type rowParser struct {
-	dim          int
+	id2Dim       map[int64]int
 	id2Field     map[int64]*schemapb.FieldSchema
 	name2FieldID map[string]int64
 	pkField      *schemapb.FieldSchema
@@ -45,14 +45,18 @@ func NewRowParser(schema *schemapb.CollectionSchema) (RowParser, error) {
 	id2Field := lo.KeyBy(schema.GetFields(), func(field *schemapb.FieldSchema) int64 {
 		return field.GetFieldID()
 	})
-	vecField, err := typeutil.GetVectorFieldSchema(schema)
-	if err != nil {
-		return nil, err
+
+	id2Dim := make(map[int64]int)
+	for id, field := range id2Field {
+		if typeutil.IsVectorType(field.GetDataType()) && !typeutil.IsSparseFloatVectorType(field.GetDataType()) {
+			dim, err := typeutil.GetDim(field)
+			if err != nil {
+				return nil, err
+			}
+			id2Dim[id] = int(dim)
+		}
 	}
-	dim, err := typeutil.GetDim(vecField)
-	if err != nil {
-		return nil, err
-	}
+
 	pkField, err := typeutil.GetPrimaryFieldSchema(schema)
 	if err != nil {
 		return nil, err
@@ -72,7 +76,7 @@ func NewRowParser(schema *schemapb.CollectionSchema) (RowParser, error) {
 		delete(name2FieldID, dynamicField.GetName())
 	}
 	return &rowParser{
-		dim:          int(dim),
+		id2Dim:       id2Dim,
 		id2Field:     id2Field,
 		name2FieldID: name2FieldID,
 		pkField:      pkField,
@@ -89,7 +93,7 @@ func (r *rowParser) wrapTypeError(v any, fieldID int64) error {
 func (r *rowParser) wrapDimError(actualDim int, fieldID int64) error {
 	field := r.id2Field[fieldID]
 	return merr.WrapErrImportFailed(fmt.Sprintf("expected dim '%d' for field '%s' with type '%s', got dim '%d'",
-		r.dim, field.GetName(), field.GetDataType().String(), actualDim))
+		r.id2Dim[fieldID], field.GetName(), field.GetDataType().String(), actualDim))
 }
 
 func (r *rowParser) wrapArrayValueTypeError(v any, eleType schemapb.DataType) error {
@@ -265,7 +269,7 @@ func (r *rowParser) parseEntity(fieldID int64, obj any) (any, error) {
 		if !ok {
 			return nil, r.wrapTypeError(obj, fieldID)
 		}
-		if len(arr) != r.dim/8 {
+		if len(arr) != r.id2Dim[fieldID]/8 {
 			return nil, r.wrapDimError(len(arr)*8, fieldID)
 		}
 		vec := make([]byte, len(arr))
@@ -286,7 +290,7 @@ func (r *rowParser) parseEntity(fieldID int64, obj any) (any, error) {
 		if !ok {
 			return nil, r.wrapTypeError(obj, fieldID)
 		}
-		if len(arr) != r.dim {
+		if len(arr) != r.id2Dim[fieldID] {
 			return nil, r.wrapDimError(len(arr), fieldID)
 		}
 		vec := make([]float32, len(arr))
@@ -302,25 +306,58 @@ func (r *rowParser) parseEntity(fieldID int64, obj any) (any, error) {
 			vec[i] = float32(num)
 		}
 		return vec, nil
-	case schemapb.DataType_Float16Vector, schemapb.DataType_BFloat16Vector:
+	case schemapb.DataType_Float16Vector:
+		// parse float string to Float16 bytes
 		arr, ok := obj.([]interface{})
 		if !ok {
 			return nil, r.wrapTypeError(obj, fieldID)
 		}
-		if len(arr) != r.dim*2 {
-			return nil, r.wrapDimError(len(arr)/2, fieldID)
+		if len(arr) != r.id2Dim[fieldID] {
+			return nil, r.wrapDimError(len(arr), fieldID)
 		}
-		vec := make([]byte, len(arr))
+		vec := make([]byte, len(arr)*2)
 		for i := 0; i < len(arr); i++ {
 			value, ok := arr[i].(json.Number)
 			if !ok {
 				return nil, r.wrapTypeError(arr[i], fieldID)
 			}
-			num, err := strconv.ParseUint(value.String(), 0, 8)
+			num, err := strconv.ParseFloat(value.String(), 32)
 			if err != nil {
 				return nil, err
 			}
-			vec[i] = byte(num)
+			copy(vec[i*2:], typeutil.Float32ToFloat16Bytes(float32(num)))
+		}
+		return vec, nil
+	case schemapb.DataType_BFloat16Vector:
+		// parse float string to BFloat16 bytes
+		arr, ok := obj.([]interface{})
+		if !ok {
+			return nil, r.wrapTypeError(obj, fieldID)
+		}
+		if len(arr) != r.id2Dim[fieldID] {
+			return nil, r.wrapDimError(len(arr), fieldID)
+		}
+		vec := make([]byte, len(arr)*2)
+		for i := 0; i < len(arr); i++ {
+			value, ok := arr[i].(json.Number)
+			if !ok {
+				return nil, r.wrapTypeError(arr[i], fieldID)
+			}
+			num, err := strconv.ParseFloat(value.String(), 32)
+			if err != nil {
+				return nil, err
+			}
+			copy(vec[i*2:], typeutil.Float32ToBFloat16Bytes(float32(num)))
+		}
+		return vec, nil
+	case schemapb.DataType_SparseFloatVector:
+		arr, ok := obj.(map[string]interface{})
+		if !ok {
+			return nil, r.wrapTypeError(obj, fieldID)
+		}
+		vec, err := typeutil.CreateSparseFloatRowFromMap(arr)
+		if err != nil {
+			return nil, err
 		}
 		return vec, nil
 	case schemapb.DataType_String, schemapb.DataType_VarChar:

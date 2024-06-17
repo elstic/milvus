@@ -176,7 +176,7 @@ func (s *SyncTaskSuiteV2) getSuiteSyncTask() *SyncTaskV2 {
 			Timestamp:   1000,
 			ChannelName: s.channelName,
 		})
-	pack.WithInsertData(s.getInsertBuffer()).WithBatchSize(10)
+	pack.WithInsertData([]*storage.InsertData{s.getInsertBuffer()}).WithBatchSize(10)
 	pack.WithDeleteData(s.getDeleteBuffer())
 
 	storageCache, err := metacache.NewStorageV2Cache(s.schema)
@@ -203,7 +203,7 @@ func (s *SyncTaskSuiteV2) TestRunNormal() {
 		Name:         "ID",
 		IsPrimaryKey: true,
 		DataType:     schemapb.DataType_Int64,
-	})
+	}, 16)
 	s.Require().NoError(err)
 
 	ids := []int64{1, 2, 3, 4, 5, 6, 7}
@@ -216,7 +216,7 @@ func (s *SyncTaskSuiteV2) TestRunNormal() {
 	seg := metacache.NewSegmentInfo(&datapb.SegmentInfo{}, bfs)
 	metacache.UpdateNumOfRows(1000)(seg)
 	s.metacache.EXPECT().GetSegmentByID(mock.Anything).Return(seg, true)
-	s.metacache.EXPECT().GetSegmentsBy(mock.Anything).Return([]*metacache.SegmentInfo{seg})
+	s.metacache.EXPECT().GetSegmentsBy(mock.Anything, mock.Anything).Return([]*metacache.SegmentInfo{seg})
 	s.metacache.EXPECT().UpdateSegments(mock.Anything, mock.Anything).Return()
 
 	s.Run("without_insert_delete", func() {

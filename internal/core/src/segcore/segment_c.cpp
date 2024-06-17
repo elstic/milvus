@@ -12,6 +12,7 @@
 #include "segcore/segment_c.h"
 
 #include <memory>
+#include <limits>
 
 #include "common/FieldData.h"
 #include "common/LoadInfo.h"
@@ -141,8 +142,8 @@ Retrieve(CTraceContext c_trace,
             c_trace.traceID, c_trace.spanID, c_trace.traceFlags};
         milvus::tracer::AutoSpan span("SegCoreRetrieve", &trace_ctx, true);
 
-        auto retrieve_result =
-            segment->Retrieve(plan, timestamp, limit_size, ignore_non_pk);
+        auto retrieve_result = segment->Retrieve(
+            &trace_ctx, plan, timestamp, limit_size, ignore_non_pk);
 
         auto size = retrieve_result->ByteSizeLong();
         std::unique_ptr<uint8_t[]> buffer(new uint8_t[size]);
@@ -174,7 +175,8 @@ RetrieveByOffsets(CTraceContext c_trace,
         milvus::tracer::AutoSpan span(
             "SegCoreRetrieveByOffsets", &trace_ctx, true);
 
-        auto retrieve_result = segment->Retrieve(plan, offsets, len);
+        auto retrieve_result =
+            segment->Retrieve(&trace_ctx, plan, offsets, len);
 
         auto size = retrieve_result->ByteSizeLong();
         std::unique_ptr<uint8_t[]> buffer(new uint8_t[size]);
@@ -238,6 +240,9 @@ Insert(CSegmentInterface c_segment,
        const uint8_t* data_info,
        const uint64_t data_info_len) {
     try {
+        AssertInfo(data_info_len < std::numeric_limits<int>::max(),
+                   "insert data length ({}) exceeds max int",
+                   data_info_len);
         auto segment = static_cast<milvus::segcore::SegmentGrowing*>(c_segment);
         auto insert_record_proto =
             std::make_unique<milvus::InsertRecordProto>();
@@ -475,4 +480,11 @@ WarmupChunkCache(CSegmentInterface c_segment, int64_t field_id) {
     } catch (std::exception& e) {
         return milvus::FailureCStatus(milvus::UnexpectedError, e.what());
     }
+}
+
+void
+RemoveFieldFile(CSegmentInterface c_segment, int64_t field_id) {
+    auto segment =
+        reinterpret_cast<milvus::segcore::SegmentSealedImpl*>(c_segment);
+    segment->RemoveFieldFile(milvus::FieldId(field_id));
 }

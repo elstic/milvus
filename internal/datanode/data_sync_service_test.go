@@ -397,7 +397,7 @@ func (s *DataSyncServiceSuite) SetupTest() {
 		},
 	}
 	s.node.ctx = context.Background()
-	s.node.channelCheckpointUpdater = newChannelCheckpointUpdater(s.node)
+	s.node.channelCheckpointUpdater = newChannelCheckpointUpdater(s.node.broker)
 	paramtable.Get().Save(paramtable.Get().DataNodeCfg.ChannelCheckpointUpdateTickInSeconds.Key, "0.01")
 	defer paramtable.Get().Save(paramtable.Get().DataNodeCfg.ChannelCheckpointUpdateTickInSeconds.Key, "10")
 	go s.node.channelCheckpointUpdater.start()
@@ -433,6 +433,7 @@ func (s *DataSyncServiceSuite) TestStartStop() {
 					CollectionID:  collMeta.ID,
 					PartitionID:   1,
 					InsertChannel: insertChannelName,
+					State:         commonpb.SegmentState_Flushed,
 				},
 
 				1: {
@@ -440,6 +441,7 @@ func (s *DataSyncServiceSuite) TestStartStop() {
 					CollectionID:  collMeta.ID,
 					PartitionID:   1,
 					InsertChannel: insertChannelName,
+					State:         commonpb.SegmentState_Flushed,
 				},
 			}
 			return lo.FilterMap(segmentIDs, func(id int64, _ int) (*datapb.SegmentInfo, bool) {

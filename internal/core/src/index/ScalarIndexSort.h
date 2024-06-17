@@ -100,6 +100,9 @@ class ScalarIndexSort : public ScalarIndex<T> {
         return true;
     }
 
+    void
+    BuildWithFieldData(const std::vector<FieldDataPtr>& datas) override;
+
  private:
     bool
     ShouldSkip(const T lower_value, const T upper_value, const OpType op);
@@ -116,7 +119,8 @@ class ScalarIndexSort : public ScalarIndex<T> {
     }
 
     void
-    LoadWithoutAssemble(const BinarySet& binary_set, const Config& config);
+    LoadWithoutAssemble(const BinarySet& binary_set,
+                        const Config& config) override;
 
  private:
     bool is_built_;

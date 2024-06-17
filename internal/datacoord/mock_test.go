@@ -265,7 +265,7 @@ func (c *mockDataNodeClient) GetMetrics(ctx context.Context, req *milvuspb.GetMe
 	}, nil
 }
 
-func (c *mockDataNodeClient) Compaction(ctx context.Context, req *datapb.CompactionPlan, opts ...grpc.CallOption) (*commonpb.Status, error) {
+func (c *mockDataNodeClient) CompactionV2(ctx context.Context, req *datapb.CompactionPlan, opts ...grpc.CallOption) (*commonpb.Status, error) {
 	if c.ch != nil {
 		c.ch <- struct{}{}
 		if c.compactionResp != nil {
@@ -317,6 +317,14 @@ func (c *mockDataNodeClient) QueryImport(ctx context.Context, req *datapb.QueryI
 
 func (c *mockDataNodeClient) DropImport(ctx context.Context, req *datapb.DropImportRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
 	return &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, nil
+}
+
+func (c *mockDataNodeClient) QuerySlot(ctx context.Context, req *datapb.QuerySlotRequest, opts ...grpc.CallOption) (*datapb.QuerySlotResponse, error) {
+	return &datapb.QuerySlotResponse{Status: merr.Success()}, nil
+}
+
+func (c *mockDataNodeClient) DropCompactionPlan(ctx context.Context, req *datapb.DropCompactionPlanRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	return merr.Success(), nil
 }
 
 func (c *mockDataNodeClient) Stop() error {
@@ -457,7 +465,9 @@ func (m *mockRootCoordClient) DropDatabase(ctx context.Context, in *milvuspb.Dro
 }
 
 func (m *mockRootCoordClient) ListDatabases(ctx context.Context, in *milvuspb.ListDatabasesRequest, opts ...grpc.CallOption) (*milvuspb.ListDatabasesResponse, error) {
-	panic("not implemented") // TODO: Implement
+	return &milvuspb.ListDatabasesResponse{
+		Status: merr.Success(),
+	}, nil
 }
 
 func (m *mockRootCoordClient) AlterDatabase(ctx context.Context, in *rootcoordpb.AlterDatabaseRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
@@ -603,16 +613,6 @@ type mockCompactionTrigger struct {
 	methods map[string]interface{}
 }
 
-// triggerCompaction trigger a compaction if any compaction condition satisfy.
-func (t *mockCompactionTrigger) triggerCompaction() error {
-	if f, ok := t.methods["triggerCompaction"]; ok {
-		if ff, ok := f.(func() error); ok {
-			return ff()
-		}
-	}
-	panic("not implemented")
-}
-
 // triggerSingleCompaction trigerr a compaction bundled with collection-partiiton-channel-segment
 func (t *mockCompactionTrigger) triggerSingleCompaction(collectionID, partitionID, segmentID int64, channel string, blockToSendSignal bool) error {
 	if f, ok := t.methods["triggerSingleCompaction"]; ok {
@@ -623,9 +623,9 @@ func (t *mockCompactionTrigger) triggerSingleCompaction(collectionID, partitionI
 	panic("not implemented")
 }
 
-// forceTriggerCompaction force to start a compaction
-func (t *mockCompactionTrigger) forceTriggerCompaction(collectionID int64) (UniqueID, error) {
-	if f, ok := t.methods["forceTriggerCompaction"]; ok {
+// triggerManualCompaction force to start a compaction
+func (t *mockCompactionTrigger) triggerManualCompaction(collectionID int64) (UniqueID, error) {
+	if f, ok := t.methods["triggerManualCompaction"]; ok {
 		if ff, ok := f.(func(collectionID int64) (UniqueID, error)); ok {
 			return ff(collectionID)
 		}

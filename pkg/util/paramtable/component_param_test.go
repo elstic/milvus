@@ -108,6 +108,8 @@ func TestComponentParam(t *testing.T) {
 
 		params.Save("common.preCreatedTopic.timeticker", "timeticker")
 		assert.Equal(t, []string{"timeticker"}, Params.TimeTicker.GetAsStrings())
+
+		assert.Equal(t, 1000, params.CommonCfg.BloomFilterApplyBatchSize.GetAsInt())
 	})
 
 	t.Run("test rootCoordConfig", func(t *testing.T) {
@@ -305,6 +307,18 @@ func TestComponentParam(t *testing.T) {
 		params.Save("queryCoord.gracefulStopTimeout", "100")
 		assert.Equal(t, 100*time.Second, Params.GracefulStopTimeout.GetAsDuration(time.Second))
 		assert.Equal(t, true, Params.EnableStoppingBalance.GetAsBool())
+
+		assert.Equal(t, 4, Params.ChannelExclusiveNodeFactor.GetAsInt())
+
+		assert.Equal(t, 200, Params.CollectionObserverInterval.GetAsInt())
+		params.Save("queryCoord.collectionObserverInterval", "100")
+		assert.Equal(t, 100, Params.CollectionObserverInterval.GetAsInt())
+		params.Reset("queryCoord.collectionObserverInterval")
+
+		assert.Equal(t, 100, Params.CheckExecutedFlagInterval.GetAsInt())
+		params.Save("queryCoord.checkExecutedFlagInterval", "200")
+		assert.Equal(t, 200, Params.CheckExecutedFlagInterval.GetAsInt())
+		params.Reset("queryCoord.checkExecutedFlagInterval")
 	})
 
 	t.Run("test queryNodeConfig", func(t *testing.T) {
@@ -337,7 +351,7 @@ func TestComponentParam(t *testing.T) {
 
 		// chunk cache
 		assert.Equal(t, "willneed", Params.ReadAheadPolicy.GetValue())
-		assert.Equal(t, "async", Params.ChunkCacheWarmingUp.GetValue())
+		assert.Equal(t, "disable", Params.ChunkCacheWarmingUp.GetValue())
 
 		// test small indexNlist/NProbe default
 		params.Remove("queryNode.segcore.smallIndex.nlist")
@@ -352,6 +366,11 @@ func TestComponentParam(t *testing.T) {
 		params.Save("queryNode.segcore.interimIndex.enableIndex", "true")
 		enableInterimIndex = Params.EnableTempSegmentIndex.GetAsBool()
 		assert.Equal(t, true, enableInterimIndex)
+
+		assert.Equal(t, false, Params.KnowhereScoreConsistency.GetAsBool())
+		params.Save("queryNode.segcore.knowhereScoreConsistency", "true")
+		assert.Equal(t, true, Params.KnowhereScoreConsistency.GetAsBool())
+		params.Save("queryNode.segcore.knowhereScoreConsistency", "false")
 
 		nlist = Params.InterimIndexNlist.GetAsInt64()
 		assert.Equal(t, int64(128), nlist)
@@ -378,9 +397,29 @@ func TestComponentParam(t *testing.T) {
 		params.Save("queryNode.memoryIndexLoadPredictMemoryUsageFactor", "2.0")
 		assert.Equal(t, 2.0, Params.MemoryIndexLoadPredictMemoryUsageFactor.GetAsFloat())
 
-		assert.NotZero(t, Params.DiskCacheCapacityLimit.GetAsInt64())
+		assert.NotZero(t, Params.DiskCacheCapacityLimit.GetAsSize())
 		params.Save("queryNode.diskCacheCapacityLimit", "70")
-		assert.Equal(t, int64(70), Params.DiskCacheCapacityLimit.GetAsInt64())
+		assert.Equal(t, int64(70), Params.DiskCacheCapacityLimit.GetAsSize())
+		params.Save("queryNode.diskCacheCapacityLimit", "70m")
+		assert.Equal(t, int64(70*1024*1024), Params.DiskCacheCapacityLimit.GetAsSize())
+
+		assert.False(t, Params.LazyLoadEnabled.GetAsBool())
+		params.Save("queryNode.lazyload.enabled", "true")
+		assert.True(t, Params.LazyLoadEnabled.GetAsBool())
+
+		assert.Equal(t, 30*time.Second, Params.LazyLoadWaitTimeout.GetAsDuration(time.Millisecond))
+		params.Save("queryNode.lazyload.waitTimeout", "100")
+		assert.Equal(t, 100*time.Millisecond, Params.LazyLoadWaitTimeout.GetAsDuration(time.Millisecond))
+
+		assert.Equal(t, 5*time.Second, Params.LazyLoadRequestResourceTimeout.GetAsDuration(time.Millisecond))
+		params.Save("queryNode.lazyload.requestResourceTimeout", "100")
+		assert.Equal(t, 100*time.Millisecond, Params.LazyLoadRequestResourceTimeout.GetAsDuration(time.Millisecond))
+
+		assert.Equal(t, 2*time.Second, Params.LazyLoadRequestResourceRetryInterval.GetAsDuration(time.Millisecond))
+		params.Save("queryNode.lazyload.requestResourceRetryInterval", "3000")
+		assert.Equal(t, 3*time.Second, Params.LazyLoadRequestResourceRetryInterval.GetAsDuration(time.Millisecond))
+
+		assert.Equal(t, 4, Params.BloomFilterApplyParallelFactor.GetAsInt())
 	})
 
 	t.Run("test dataCoordConfig", func(t *testing.T) {
@@ -404,6 +443,23 @@ func TestComponentParam(t *testing.T) {
 
 		params.Save("datacoord.gracefulStopTimeout", "100")
 		assert.Equal(t, 100*time.Second, Params.GracefulStopTimeout.GetAsDuration(time.Second))
+
+		params.Save("dataCoord.compaction.clustering.enable", "true")
+		assert.Equal(t, true, Params.ClusteringCompactionEnable.GetAsBool())
+		params.Save("dataCoord.compaction.clustering.newDataSizeThreshold", "10")
+		assert.Equal(t, int64(10), Params.ClusteringCompactionNewDataSizeThreshold.GetAsSize())
+		params.Save("dataCoord.compaction.clustering.newDataSizeThreshold", "10k")
+		assert.Equal(t, int64(10*1024), Params.ClusteringCompactionNewDataSizeThreshold.GetAsSize())
+		params.Save("dataCoord.compaction.clustering.newDataSizeThreshold", "10m")
+		assert.Equal(t, int64(10*1024*1024), Params.ClusteringCompactionNewDataSizeThreshold.GetAsSize())
+		params.Save("dataCoord.compaction.clustering.newDataSizeThreshold", "10g")
+		assert.Equal(t, int64(10*1024*1024*1024), Params.ClusteringCompactionNewDataSizeThreshold.GetAsSize())
+		params.Save("dataCoord.compaction.clustering.dropTolerance", "86400")
+		assert.Equal(t, int64(86400), Params.ClusteringCompactionDropTolerance.GetAsInt64())
+		params.Save("dataCoord.compaction.clustering.maxSegmentSize", "100m")
+		assert.Equal(t, int64(100*1024*1024), Params.ClusteringCompactionMaxSegmentSize.GetAsSize())
+		params.Save("dataCoord.compaction.clustering.preferSegmentSize", "10m")
+		assert.Equal(t, int64(10*1024*1024), Params.ClusteringCompactionPreferSegmentSize.GetAsSize())
 	})
 
 	t.Run("test dataNodeConfig", func(t *testing.T) {
@@ -456,6 +512,12 @@ func TestComponentParam(t *testing.T) {
 		assert.Equal(t, 16, Params.ReadBufferSizeInMB.GetAsInt())
 		params.Save("datanode.gracefulStopTimeout", "100")
 		assert.Equal(t, 100*time.Second, Params.GracefulStopTimeout.GetAsDuration(time.Second))
+		assert.Equal(t, 2, Params.SlotCap.GetAsInt())
+		// clustering compaction
+		params.Save("datanode.clusteringCompaction.memoryBufferRatio", "0.1")
+		assert.Equal(t, 0.1, Params.ClusteringCompactionMemoryBufferRatio.GetAsFloat())
+
+		assert.Equal(t, 4, Params.BloomFilterApplyParallelFactor.GetAsInt())
 	})
 
 	t.Run("test indexNodeConfig", func(t *testing.T) {
@@ -473,6 +535,14 @@ func TestComponentParam(t *testing.T) {
 		params.Save(Params.RootCoordDml.FallbackKeys[0], "dml2")
 
 		assert.Equal(t, "by-dev-dml1", Params.RootCoordDml.GetValue())
+	})
+
+	t.Run("clustering compaction config", func(t *testing.T) {
+		Params := &params.CommonCfg
+		params.Save("common.usePartitionKeyAsClusteringKey", "true")
+		assert.Equal(t, true, Params.UsePartitionKeyAsClusteringKey.GetAsBool())
+		params.Save("common.useVectorAsClusteringKey", "true")
+		assert.Equal(t, true, Params.UseVectorAsClusteringKey.GetAsBool())
 	})
 }
 
@@ -502,6 +572,7 @@ func TestCachedParam(t *testing.T) {
 
 	assert.Equal(t, uint(100000), params.CommonCfg.BloomFilterSize.GetAsUint())
 	assert.Equal(t, uint(100000), params.CommonCfg.BloomFilterSize.GetAsUint())
+	assert.Equal(t, "BlockedBloomFilter", params.CommonCfg.BloomFilterType.GetValue())
 
 	assert.Equal(t, uint64(8388608), params.ServiceParam.MQCfg.PursuitBufferSize.GetAsUint64())
 	assert.Equal(t, uint64(8388608), params.ServiceParam.MQCfg.PursuitBufferSize.GetAsUint64())

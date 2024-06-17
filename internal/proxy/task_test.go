@@ -49,6 +49,7 @@ import (
 	"github.com/milvus-io/milvus/pkg/util/merr"
 	"github.com/milvus-io/milvus/pkg/util/metric"
 	"github.com/milvus-io/milvus/pkg/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/util/testutils"
 	"github.com/milvus-io/milvus/pkg/util/timerecord"
 	"github.com/milvus-io/milvus/pkg/util/typeutil"
 	"github.com/milvus-io/milvus/pkg/util/uniquegenerator"
@@ -750,6 +751,25 @@ func TestCreateCollectionTask(t *testing.T) {
 		tooManyVectorFieldsSchema, err := proto.Marshal(schema)
 		assert.NoError(t, err)
 		task.CreateCollectionRequest.Schema = tooManyVectorFieldsSchema
+		err = task.PreExecute(ctx)
+		assert.Error(t, err)
+
+		// without vector field
+		schema = &schemapb.CollectionSchema{
+			Name:        collectionName,
+			Description: "",
+			AutoID:      false,
+			Fields: []*schemapb.FieldSchema{
+				{
+					Name:         "id",
+					DataType:     schemapb.DataType_Int64,
+					IsPrimaryKey: true,
+				},
+			},
+		}
+		noVectorSchema, err := proto.Marshal(schema)
+		assert.NoError(t, err)
+		task.CreateCollectionRequest.Schema = noVectorSchema
 		err = task.PreExecute(ctx)
 		assert.Error(t, err)
 
@@ -1680,7 +1700,7 @@ func TestTask_Int64PrimaryKey(t *testing.T) {
 	defer segAllocator.Close()
 
 	t.Run("insert", func(t *testing.T) {
-		hash := generateHashKeys(nb)
+		hash := testutils.GenerateHashKeys(nb)
 		task := &insertTask{
 			insertMsg: &BaseInsertTask{
 				BaseMsg: msgstream.BaseMsg{
@@ -1874,7 +1894,7 @@ func TestTask_VarCharPrimaryKey(t *testing.T) {
 	defer segAllocator.Close()
 
 	t.Run("insert", func(t *testing.T) {
-		hash := generateHashKeys(nb)
+		hash := testutils.GenerateHashKeys(nb)
 		task := &insertTask{
 			insertMsg: &BaseInsertTask{
 				BaseMsg: msgstream.BaseMsg{
@@ -1929,7 +1949,7 @@ func TestTask_VarCharPrimaryKey(t *testing.T) {
 	})
 
 	t.Run("upsert", func(t *testing.T) {
-		hash := generateHashKeys(nb)
+		hash := testutils.GenerateHashKeys(nb)
 		task := &upsertTask{
 			upsertMsg: &msgstream.UpsertMsg{
 				InsertMsg: &BaseInsertTask{
@@ -2964,6 +2984,7 @@ func TestDescribeResourceGroupTaskFailed(t *testing.T) {
 
 func TestCreateCollectionTaskWithPartitionKey(t *testing.T) {
 	rc := NewRootCoordMock()
+	paramtable.Init()
 
 	defer rc.Close()
 	ctx := context.Background()
@@ -3029,12 +3050,20 @@ func TestCreateCollectionTaskWithPartitionKey(t *testing.T) {
 	}
 
 	t.Run("PreExecute", func(t *testing.T) {
+		defer Params.Reset(Params.RootCoordCfg.MaxPartitionNum.Key)
 		var err error
 
 		// test default num partitions
 		err = task.PreExecute(ctx)
 		assert.NoError(t, err)
 		assert.Equal(t, common.DefaultPartitionsWithPartitionKey, task.GetNumPartitions())
+
+		Params.Save(Params.RootCoordCfg.MaxPartitionNum.Key, "16")
+		task.NumPartitions = 0
+		err = task.PreExecute(ctx)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(16), task.GetNumPartitions())
+		Params.Reset(Params.RootCoordCfg.MaxPartitionNum.Key)
 
 		// test specify num partition without partition key field
 		partitionKeyField.IsPartitionKey = false
@@ -3083,6 +3112,15 @@ func TestCreateCollectionTaskWithPartitionKey(t *testing.T) {
 		assert.Error(t, err)
 		primaryField.IsPartitionKey = false
 
+		// test partition num too large
+		Params.Save(Params.RootCoordCfg.MaxPartitionNum.Key, "16")
+		marshaledSchema, err = proto.Marshal(schema)
+		assert.NoError(t, err)
+		task.Schema = marshaledSchema
+		err = task.PreExecute(ctx)
+		assert.Error(t, err)
+		Params.Reset(Params.RootCoordCfg.MaxPartitionNum.Key)
+
 		marshaledSchema, err = proto.Marshal(schema)
 		assert.NoError(t, err)
 		task.Schema = marshaledSchema
@@ -3097,7 +3135,7 @@ func TestCreateCollectionTaskWithPartitionKey(t *testing.T) {
 		// check default partitions
 		err = InitMetaCache(ctx, rc, nil, nil)
 		assert.NoError(t, err)
-		partitionNames, err := getDefaultPartitionNames(ctx, "", task.CollectionName)
+		partitionNames, err := getDefaultPartitionsInPartitionKeyMode(ctx, "", task.CollectionName)
 		assert.NoError(t, err)
 		assert.Equal(t, task.GetNumPartitions(), int64(len(partitionNames)))
 
@@ -3321,7 +3359,7 @@ func TestPartitionKey(t *testing.T) {
 	})
 
 	t.Run("Upsert", func(t *testing.T) {
-		hash := generateHashKeys(nb)
+		hash := testutils.GenerateHashKeys(nb)
 		ut := &upsertTask{
 			ctx:       ctx,
 			Condition: NewTaskCondition(ctx),
@@ -3489,81 +3527,6 @@ func TestClusteringKey(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
-	t.Run("create collection clustering key can not be partition key", func(t *testing.T) {
-		fieldName2Type := make(map[string]schemapb.DataType)
-		fieldName2Type["int64_field"] = schemapb.DataType_Int64
-		fieldName2Type["varChar_field"] = schemapb.DataType_VarChar
-		fieldName2Type["fvec_field"] = schemapb.DataType_FloatVector
-		schema := constructCollectionSchemaByDataType(collectionName, fieldName2Type, "int64_field", false)
-		fieldName2Type["cluster_key_field"] = schemapb.DataType_Int64
-		clusterKeyField := &schemapb.FieldSchema{
-			Name:            "cluster_key_field",
-			DataType:        schemapb.DataType_Int64,
-			IsClusteringKey: true,
-			IsPartitionKey:  true,
-		}
-		schema.Fields = append(schema.Fields, clusterKeyField)
-		marshaledSchema, err := proto.Marshal(schema)
-		assert.NoError(t, err)
-
-		createCollectionTask := &createCollectionTask{
-			Condition: NewTaskCondition(ctx),
-			CreateCollectionRequest: &milvuspb.CreateCollectionRequest{
-				Base: &commonpb.MsgBase{
-					MsgID:     UniqueID(uniquegenerator.GetUniqueIntGeneratorIns().GetInt()),
-					Timestamp: Timestamp(time.Now().UnixNano()),
-				},
-				DbName:         "",
-				CollectionName: collectionName,
-				Schema:         marshaledSchema,
-				ShardsNum:      shardsNum,
-			},
-			ctx:       ctx,
-			rootCoord: rc,
-			result:    nil,
-			schema:    nil,
-		}
-		err = createCollectionTask.PreExecute(ctx)
-		assert.Error(t, err)
-	})
-
-	t.Run("create collection clustering key can not be primary key", func(t *testing.T) {
-		fieldName2Type := make(map[string]schemapb.DataType)
-		fieldName2Type["varChar_field"] = schemapb.DataType_VarChar
-		fieldName2Type["fvec_field"] = schemapb.DataType_FloatVector
-		schema := constructCollectionSchemaByDataType(collectionName, fieldName2Type, "int64_field", false)
-		fieldName2Type["cluster_key_field"] = schemapb.DataType_Int64
-		clusterKeyField := &schemapb.FieldSchema{
-			Name:            "cluster_key_field",
-			DataType:        schemapb.DataType_Int64,
-			IsClusteringKey: true,
-			IsPrimaryKey:    true,
-		}
-		schema.Fields = append(schema.Fields, clusterKeyField)
-		marshaledSchema, err := proto.Marshal(schema)
-		assert.NoError(t, err)
-
-		createCollectionTask := &createCollectionTask{
-			Condition: NewTaskCondition(ctx),
-			CreateCollectionRequest: &milvuspb.CreateCollectionRequest{
-				Base: &commonpb.MsgBase{
-					MsgID:     UniqueID(uniquegenerator.GetUniqueIntGeneratorIns().GetInt()),
-					Timestamp: Timestamp(time.Now().UnixNano()),
-				},
-				DbName:         "",
-				CollectionName: collectionName,
-				Schema:         marshaledSchema,
-				ShardsNum:      shardsNum,
-			},
-			ctx:       ctx,
-			rootCoord: rc,
-			result:    nil,
-			schema:    nil,
-		}
-		err = createCollectionTask.PreExecute(ctx)
-		assert.Error(t, err)
-	})
-
 	t.Run("create collection not support more than one clustering key", func(t *testing.T) {
 		fieldName2Type := make(map[string]schemapb.DataType)
 		fieldName2Type["int64_field"] = schemapb.DataType_Int64
@@ -3643,23 +3606,4 @@ func TestAlterCollectionCheckLoaded(t *testing.T) {
 	}
 	err = task.PreExecute(context.Background())
 	assert.Equal(t, merr.Code(merr.ErrCollectionLoaded), merr.Code(err))
-}
-
-func TestAlterDatabase(t *testing.T) {
-	rc := mocks.NewMockRootCoordClient(t)
-
-	rc.EXPECT().AlterDatabase(mock.Anything, mock.Anything).Return(merr.Success(), nil)
-	task := &alterDatabaseTask{
-		AlterDatabaseRequest: &milvuspb.AlterDatabaseRequest{
-			Base:       &commonpb.MsgBase{},
-			DbName:     "test_alter_database",
-			Properties: []*commonpb.KeyValuePair{{Key: common.MmapEnabledKey, Value: "true"}},
-		},
-		rootCoord: rc,
-	}
-	err := task.PreExecute(context.Background())
-	assert.Nil(t, err)
-
-	err = task.Execute(context.Background())
-	assert.Nil(t, err)
 }

@@ -1,15 +1,16 @@
 package datacoord
 
 import (
+	"context"
 	"testing"
 
-	"github.com/pingcap/log"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/log"
 )
 
 func TestCompactionTriggerManagerSuite(t *testing.T) {
@@ -20,15 +21,17 @@ type CompactionTriggerManagerSuite struct {
 	suite.Suite
 
 	mockAlloc       *NMockAllocator
+	handler         Handler
 	mockPlanContext *MockCompactionPlanContext
 	testLabel       *CompactionGroupLabel
 	meta            *meta
 
-	m *CompactionTriggerManager
+	triggerManager *CompactionTriggerManager
 }
 
 func (s *CompactionTriggerManagerSuite) SetupTest() {
 	s.mockAlloc = NewNMockAllocator(s.T())
+	s.handler = NewNMockHandler(s.T())
 	s.mockPlanContext = NewMockCompactionPlanContext(s.T())
 
 	s.testLabel = &CompactionGroupLabel{
@@ -36,18 +39,18 @@ func (s *CompactionTriggerManagerSuite) SetupTest() {
 		PartitionID:  10,
 		Channel:      "ch-1",
 	}
-	s.meta = &meta{segments: &SegmentsInfo{
-		segments: genSegmentsForMeta(s.testLabel),
-	}}
+	segments := genSegmentsForMeta(s.testLabel)
+	s.meta = &meta{segments: NewSegmentsInfo()}
+	for id, segment := range segments {
+		s.meta.segments.SetSegment(id, segment)
+	}
 
-	s.m = NewCompactionTriggerManager(s.mockAlloc, s.mockPlanContext)
+	s.triggerManager = NewCompactionTriggerManager(s.mockAlloc, s.handler, s.mockPlanContext, s.meta)
 }
 
 func (s *CompactionTriggerManagerSuite) TestNotifyToFullScheduler() {
 	s.mockPlanContext.EXPECT().isFull().Return(true)
-	viewManager := NewCompactionViewManager(s.meta, s.m, s.m.allocator)
 	collSegs := s.meta.GetCompactableSegmentGroupByCollection()
-
 	segments, found := collSegs[1]
 	s.Require().True(found)
 
@@ -57,7 +60,7 @@ func (s *CompactionTriggerManagerSuite) TestNotifyToFullScheduler() {
 
 	latestL0Segments := GetViewsByInfo(levelZeroSegments...)
 	s.Require().NotEmpty(latestL0Segments)
-	needRefresh, levelZeroView := viewManager.getChangedLevelZeroViews(1, latestL0Segments)
+	needRefresh, levelZeroView := s.triggerManager.l0Policy.getChangedLevelZeroViews(1, latestL0Segments)
 	s.Require().True(needRefresh)
 	s.Require().Equal(1, len(levelZeroView))
 	cView, ok := levelZeroView[0].(*LevelZeroSegmentsView)
@@ -67,11 +70,15 @@ func (s *CompactionTriggerManagerSuite) TestNotifyToFullScheduler() {
 
 	// s.mockAlloc.EXPECT().allocID(mock.Anything).Return(1, nil)
 	s.mockPlanContext.EXPECT().isFull().Return(false)
-	s.m.Notify(19530, TriggerTypeLevelZeroViewChange, levelZeroView)
+	s.mockAlloc.EXPECT().allocID(mock.Anything).Return(19530, nil).Maybe()
+	s.triggerManager.notify(context.Background(), TriggerTypeLevelZeroViewChange, levelZeroView)
 }
 
 func (s *CompactionTriggerManagerSuite) TestNotifyByViewIDLE() {
-	viewManager := NewCompactionViewManager(s.meta, s.m, s.m.allocator)
+	handler := NewNMockHandler(s.T())
+	handler.EXPECT().GetCollection(mock.Anything, mock.Anything).Return(&collectionInfo{}, nil)
+	s.triggerManager.handler = handler
+
 	collSegs := s.meta.GetCompactableSegmentGroupByCollection()
 
 	segments, found := collSegs[1]
@@ -88,7 +95,7 @@ func (s *CompactionTriggerManagerSuite) TestNotifyByViewIDLE() {
 	expectedSegID := seg1.ID
 
 	s.Require().Equal(1, len(latestL0Segments))
-	needRefresh, levelZeroView := viewManager.getChangedLevelZeroViews(1, latestL0Segments)
+	needRefresh, levelZeroView := s.triggerManager.l0Policy.getChangedLevelZeroViews(1, latestL0Segments)
 	s.True(needRefresh)
 	s.Require().Equal(1, len(levelZeroView))
 	cView, ok := levelZeroView[0].(*LevelZeroSegmentsView)
@@ -98,33 +105,30 @@ func (s *CompactionTriggerManagerSuite) TestNotifyByViewIDLE() {
 
 	s.mockAlloc.EXPECT().allocID(mock.Anything).Return(1, nil)
 	s.mockPlanContext.EXPECT().isFull().Return(false)
-	s.mockPlanContext.EXPECT().execCompactionPlan(mock.Anything, mock.Anything).
-		Run(func(signal *compactionSignal, plan *datapb.CompactionPlan) {
-			s.EqualValues(19530, signal.id)
-			s.True(signal.isGlobal)
-			s.False(signal.isForce)
-			s.EqualValues(30000, signal.pos.GetTimestamp())
-			s.Equal(s.testLabel.CollectionID, signal.collectionID)
-			s.Equal(s.testLabel.PartitionID, signal.partitionID)
+	s.mockPlanContext.EXPECT().enqueueCompaction(mock.Anything).
+		RunAndReturn(func(task *datapb.CompactionTask) error {
+			s.EqualValues(19530, task.GetTriggerID())
+			// s.True(signal.isGlobal)
+			// s.False(signal.isForce)
+			s.EqualValues(30000, task.GetPos().GetTimestamp())
+			s.Equal(s.testLabel.CollectionID, task.GetCollectionID())
+			s.Equal(s.testLabel.PartitionID, task.GetPartitionID())
 
-			s.NotNil(plan)
-			s.Equal(s.testLabel.Channel, plan.GetChannel())
-			s.Equal(datapb.CompactionType_Level0DeleteCompaction, plan.GetType())
+			s.Equal(s.testLabel.Channel, task.GetChannel())
+			s.Equal(datapb.CompactionType_Level0DeleteCompaction, task.GetType())
 
 			expectedSegs := []int64{expectedSegID}
-			gotSegs := lo.Map(plan.GetSegmentBinlogs(), func(b *datapb.CompactionSegmentBinlogs, _ int) int64 {
-				return b.GetSegmentID()
-			})
-
-			s.ElementsMatch(expectedSegs, gotSegs)
-			log.Info("generated plan", zap.Any("plan", plan))
+			s.ElementsMatch(expectedSegs, task.GetInputSegments())
+			return nil
 		}).Return(nil).Once()
-
-	s.m.Notify(19530, TriggerTypeLevelZeroViewIDLE, levelZeroView)
+	s.mockAlloc.EXPECT().allocID(mock.Anything).Return(19530, nil).Maybe()
+	s.triggerManager.notify(context.Background(), TriggerTypeLevelZeroViewIDLE, levelZeroView)
 }
 
 func (s *CompactionTriggerManagerSuite) TestNotifyByViewChange() {
-	viewManager := NewCompactionViewManager(s.meta, s.m, s.m.allocator)
+	handler := NewNMockHandler(s.T())
+	handler.EXPECT().GetCollection(mock.Anything, mock.Anything).Return(&collectionInfo{}, nil)
+	s.triggerManager.handler = handler
 	collSegs := s.meta.GetCompactableSegmentGroupByCollection()
 
 	segments, found := collSegs[1]
@@ -136,7 +140,7 @@ func (s *CompactionTriggerManagerSuite) TestNotifyByViewChange() {
 
 	latestL0Segments := GetViewsByInfo(levelZeroSegments...)
 	s.Require().NotEmpty(latestL0Segments)
-	needRefresh, levelZeroView := viewManager.getChangedLevelZeroViews(1, latestL0Segments)
+	needRefresh, levelZeroView := s.triggerManager.l0Policy.getChangedLevelZeroViews(1, latestL0Segments)
 	s.Require().True(needRefresh)
 	s.Require().Equal(1, len(levelZeroView))
 	cView, ok := levelZeroView[0].(*LevelZeroSegmentsView)
@@ -146,27 +150,21 @@ func (s *CompactionTriggerManagerSuite) TestNotifyByViewChange() {
 
 	s.mockAlloc.EXPECT().allocID(mock.Anything).Return(1, nil)
 	s.mockPlanContext.EXPECT().isFull().Return(false)
-	s.mockPlanContext.EXPECT().execCompactionPlan(mock.Anything, mock.Anything).
-		Run(func(signal *compactionSignal, plan *datapb.CompactionPlan) {
-			s.EqualValues(19530, signal.id)
-			s.True(signal.isGlobal)
-			s.False(signal.isForce)
-			s.EqualValues(30000, signal.pos.GetTimestamp())
-			s.Equal(s.testLabel.CollectionID, signal.collectionID)
-			s.Equal(s.testLabel.PartitionID, signal.partitionID)
-
-			s.NotNil(plan)
-			s.Equal(s.testLabel.Channel, plan.GetChannel())
-			s.Equal(datapb.CompactionType_Level0DeleteCompaction, plan.GetType())
+	s.mockPlanContext.EXPECT().enqueueCompaction(mock.Anything).
+		RunAndReturn(func(task *datapb.CompactionTask) error {
+			s.EqualValues(19530, task.GetTriggerID())
+			// s.True(signal.isGlobal)
+			// s.False(signal.isForce)
+			s.EqualValues(30000, task.GetPos().GetTimestamp())
+			s.Equal(s.testLabel.CollectionID, task.GetCollectionID())
+			s.Equal(s.testLabel.PartitionID, task.GetPartitionID())
+			s.Equal(s.testLabel.Channel, task.GetChannel())
+			s.Equal(datapb.CompactionType_Level0DeleteCompaction, task.GetType())
 
 			expectedSegs := []int64{100, 101, 102}
-			gotSegs := lo.Map(plan.GetSegmentBinlogs(), func(b *datapb.CompactionSegmentBinlogs, _ int) int64 {
-				return b.GetSegmentID()
-			})
-
-			s.ElementsMatch(expectedSegs, gotSegs)
-			log.Info("generated plan", zap.Any("plan", plan))
+			s.ElementsMatch(expectedSegs, task.GetInputSegments())
+			return nil
 		}).Return(nil).Once()
-
-	s.m.Notify(19530, TriggerTypeLevelZeroViewChange, levelZeroView)
+	s.mockAlloc.EXPECT().allocID(mock.Anything).Return(19530, nil).Maybe()
+	s.triggerManager.notify(context.Background(), TriggerTypeLevelZeroViewChange, levelZeroView)
 }

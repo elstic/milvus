@@ -28,6 +28,7 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
+	"github.com/milvus-io/milvus/internal/datanode/compaction"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
 	"github.com/milvus-io/milvus/pkg/log"
@@ -64,7 +65,7 @@ type ddNode struct {
 	vChannelName string
 
 	dropMode           atomic.Value
-	compactionExecutor *compactionExecutor
+	compactionExecutor compaction.Executor
 
 	// for recovery
 	growingSegInfo    map[UniqueID]*datapb.SegmentInfo // segmentID
@@ -93,7 +94,7 @@ func (ddn *ddNode) IsValidInMsg(in []Msg) bool {
 func (ddn *ddNode) Operate(in []Msg) []Msg {
 	msMsg, ok := in[0].(*MsgStreamMsg)
 	if !ok {
-		log.Warn("type assertion failed for MsgStreamMsg", zap.String("name", reflect.TypeOf(in[0]).Name()))
+		log.Warn("type assertion failed for MsgStreamMsg", zap.String("channel", ddn.vChannelName), zap.String("name", reflect.TypeOf(in[0]).Name()))
 		return []Msg{}
 	}
 
@@ -109,14 +110,12 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 			endPositions:   msMsg.EndPositions(),
 			dropCollection: false,
 		}
-		log.Warn("MsgStream closed", zap.Any("ddNode node", ddn.Name()), zap.Int64("collection", ddn.collectionID), zap.String("channel", ddn.vChannelName))
+		log.Warn("MsgStream closed", zap.Any("ddNode node", ddn.Name()), zap.String("channel", ddn.vChannelName), zap.Int64("collection", ddn.collectionID))
 		return []Msg{&fgMsg}
 	}
 
 	if load := ddn.dropMode.Load(); load != nil && load.(bool) {
-		log.RatedInfo(1.0, "ddNode in dropMode",
-			zap.String("vChannelName", ddn.vChannelName),
-			zap.Int64("collectionID", ddn.collectionID))
+		log.RatedInfo(1.0, "ddNode in dropMode", zap.String("channel", ddn.vChannelName))
 		return []Msg{}
 	}
 
@@ -147,41 +146,37 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 		switch msg.Type() {
 		case commonpb.MsgType_DropCollection:
 			if msg.(*msgstream.DropCollectionMsg).GetCollectionID() == ddn.collectionID {
-				log.Info("Receiving DropCollection msg",
-					zap.Int64("collectionID", ddn.collectionID),
-					zap.String("vChannelName", ddn.vChannelName))
+				log.Info("Receiving DropCollection msg", zap.String("channel", ddn.vChannelName))
 				ddn.dropMode.Store(true)
 
-				log.Info("Stop compaction of vChannel", zap.String("vChannelName", ddn.vChannelName))
-				ddn.compactionExecutor.discardByDroppedChannel(ddn.vChannelName)
+				log.Info("Stop compaction for dropped channel", zap.String("channel", ddn.vChannelName))
+				ddn.compactionExecutor.DiscardByDroppedChannel(ddn.vChannelName)
 				fgMsg.dropCollection = true
 			}
 
 		case commonpb.MsgType_DropPartition:
 			dpMsg := msg.(*msgstream.DropPartitionMsg)
 			if dpMsg.GetCollectionID() == ddn.collectionID {
-				log.Info("drop partition msg received",
-					zap.Int64("collectionID", dpMsg.GetCollectionID()),
-					zap.Int64("partitionID", dpMsg.GetPartitionID()),
-					zap.String("vChanneName", ddn.vChannelName))
+				log.Info("drop partition msg received", zap.String("channel", ddn.vChannelName), zap.Int64("partitionID", dpMsg.GetPartitionID()))
 				fgMsg.dropPartitions = append(fgMsg.dropPartitions, dpMsg.PartitionID)
 			}
 
 		case commonpb.MsgType_Insert:
 			imsg := msg.(*msgstream.InsertMsg)
 			if imsg.CollectionID != ddn.collectionID {
-				log.Info("filter invalid insert message, collection mis-match",
+				log.Warn("filter invalid insert message, collection mis-match",
 					zap.Int64("Get collID", imsg.CollectionID),
+					zap.String("channel", ddn.vChannelName),
 					zap.Int64("Expected collID", ddn.collectionID))
 				continue
 			}
 
 			if ddn.tryToFilterSegmentInsertMessages(imsg) {
-				log.Info("filter insert messages",
+				log.Debug("filter insert messages",
 					zap.Int64("filter segmentID", imsg.GetSegmentID()),
+					zap.String("channel", ddn.vChannelName),
 					zap.Uint64("message timestamp", msg.EndTs()),
-					zap.String("segment's vChannel", imsg.GetShardName()),
-					zap.String("current vChannel", ddn.vChannelName))
+				)
 				continue
 			}
 
@@ -200,22 +195,23 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 				Add(float64(imsg.GetNumRows()))
 
 			log.Debug("DDNode receive insert messages",
-				zap.Int("numRows", len(imsg.GetRowIDs())),
-				zap.String("vChannelName", ddn.vChannelName))
+				zap.Int64("segmentID", imsg.GetSegmentID()),
+				zap.String("channel", ddn.vChannelName),
+				zap.Int("numRows", len(imsg.GetRowIDs())))
 			fgMsg.insertMessages = append(fgMsg.insertMessages, imsg)
 
 		case commonpb.MsgType_Delete:
 			dmsg := msg.(*msgstream.DeleteMsg)
-			log.Debug("DDNode receive delete messages",
-				zap.Int64("numRows", dmsg.NumRows),
-				zap.String("vChannelName", ddn.vChannelName))
 
 			if dmsg.CollectionID != ddn.collectionID {
 				log.Warn("filter invalid DeleteMsg, collection mis-match",
 					zap.Int64("Get collID", dmsg.CollectionID),
+					zap.String("channel", ddn.vChannelName),
 					zap.Int64("Expected collID", ddn.collectionID))
 				continue
 			}
+
+			log.Debug("DDNode receive delete messages", zap.String("channel", ddn.vChannelName), zap.Int64("numRows", dmsg.NumRows))
 			rateCol.Add(metricsinfo.DeleteConsumeThroughput, float64(proto.Size(&dmsg.DeleteRequest)))
 
 			metrics.DataNodeConsumeBytesCount.
@@ -285,7 +281,7 @@ func (ddn *ddNode) Close() {
 }
 
 func newDDNode(ctx context.Context, collID UniqueID, vChannelName string, droppedSegmentIDs []UniqueID,
-	sealedSegments []*datapb.SegmentInfo, growingSegments []*datapb.SegmentInfo, compactor *compactionExecutor,
+	sealedSegments []*datapb.SegmentInfo, growingSegments []*datapb.SegmentInfo, executor compaction.Executor,
 ) (*ddNode, error) {
 	baseNode := BaseNode{}
 	baseNode.SetMaxQueueLength(Params.DataNodeCfg.FlowGraphMaxQueueLength.GetAsInt32())
@@ -299,7 +295,7 @@ func newDDNode(ctx context.Context, collID UniqueID, vChannelName string, droppe
 		growingSegInfo:     make(map[UniqueID]*datapb.SegmentInfo, len(growingSegments)),
 		droppedSegmentIDs:  droppedSegmentIDs,
 		vChannelName:       vChannelName,
-		compactionExecutor: compactor,
+		compactionExecutor: executor,
 	}
 
 	dd.dropMode.Store(false)

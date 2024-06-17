@@ -426,6 +426,49 @@ func (_c *MockCluster_QueryPreImport_Call) RunAndReturn(run func(int64, *datapb.
 	return _c
 }
 
+// QuerySlots provides a mock function with given fields:
+func (_m *MockCluster) QuerySlots() map[int64]int64 {
+	ret := _m.Called()
+
+	var r0 map[int64]int64
+	if rf, ok := ret.Get(0).(func() map[int64]int64); ok {
+		r0 = rf()
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(map[int64]int64)
+		}
+	}
+
+	return r0
+}
+
+// MockCluster_QuerySlots_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'QuerySlots'
+type MockCluster_QuerySlots_Call struct {
+	*mock.Call
+}
+
+// QuerySlots is a helper method to define mock.On call
+func (_e *MockCluster_Expecter) QuerySlots() *MockCluster_QuerySlots_Call {
+	return &MockCluster_QuerySlots_Call{Call: _e.mock.On("QuerySlots")}
+}
+
+func (_c *MockCluster_QuerySlots_Call) Run(run func()) *MockCluster_QuerySlots_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockCluster_QuerySlots_Call) Return(_a0 map[int64]int64) *MockCluster_QuerySlots_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockCluster_QuerySlots_Call) RunAndReturn(run func() map[int64]int64) *MockCluster_QuerySlots_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Register provides a mock function with given fields: node
 func (_m *MockCluster) Register(node *NodeInfo) error {
 	ret := _m.Called(node)
@@ -553,13 +596,13 @@ func (_c *MockCluster_UnRegister_Call) RunAndReturn(run func(*NodeInfo) error) *
 	return _c
 }
 
-// Watch provides a mock function with given fields: ctx, ch, collectionID
-func (_m *MockCluster) Watch(ctx context.Context, ch string, collectionID int64) error {
-	ret := _m.Called(ctx, ch, collectionID)
+// Watch provides a mock function with given fields: ctx, ch
+func (_m *MockCluster) Watch(ctx context.Context, ch RWChannel) error {
+	ret := _m.Called(ctx, ch)
 
 	var r0 error
-	if rf, ok := ret.Get(0).(func(context.Context, string, int64) error); ok {
-		r0 = rf(ctx, ch, collectionID)
+	if rf, ok := ret.Get(0).(func(context.Context, RWChannel) error); ok {
+		r0 = rf(ctx, ch)
 	} else {
 		r0 = ret.Error(0)
 	}
@@ -574,15 +617,14 @@ type MockCluster_Watch_Call struct {
 
 // Watch is a helper method to define mock.On call
 //   - ctx context.Context
-//   - ch string
-//   - collectionID int64
-func (_e *MockCluster_Expecter) Watch(ctx interface{}, ch interface{}, collectionID interface{}) *MockCluster_Watch_Call {
-	return &MockCluster_Watch_Call{Call: _e.mock.On("Watch", ctx, ch, collectionID)}
+//   - ch RWChannel
+func (_e *MockCluster_Expecter) Watch(ctx interface{}, ch interface{}) *MockCluster_Watch_Call {
+	return &MockCluster_Watch_Call{Call: _e.mock.On("Watch", ctx, ch)}
 }
 
-func (_c *MockCluster_Watch_Call) Run(run func(ctx context.Context, ch string, collectionID int64)) *MockCluster_Watch_Call {
+func (_c *MockCluster_Watch_Call) Run(run func(ctx context.Context, ch RWChannel)) *MockCluster_Watch_Call {
 	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(string), args[2].(int64))
+		run(args[0].(context.Context), args[1].(RWChannel))
 	})
 	return _c
 }
@@ -592,7 +634,7 @@ func (_c *MockCluster_Watch_Call) Return(_a0 error) *MockCluster_Watch_Call {
 	return _c
 }
 
-func (_c *MockCluster_Watch_Call) RunAndReturn(run func(context.Context, string, int64) error) *MockCluster_Watch_Call {
+func (_c *MockCluster_Watch_Call) RunAndReturn(run func(context.Context, RWChannel) error) *MockCluster_Watch_Call {
 	_c.Call.Return(run)
 	return _c
 }

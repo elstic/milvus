@@ -103,17 +103,21 @@ DeserializeFileData(const std::shared_ptr<uint8_t[]> input_data,
                     int64_t length) {
     auto binlog_reader = std::make_shared<BinlogReader>(input_data, length);
     auto medium_type = ReadMediumType(binlog_reader);
+    std::unique_ptr<DataCodec> res;
     switch (medium_type) {
         case StorageType::Remote: {
-            return DeserializeRemoteFileData(binlog_reader);
+            res = DeserializeRemoteFileData(binlog_reader);
+            break;
         }
         case StorageType::LocalDisk: {
-            return DeserializeLocalFileData(binlog_reader);
+            res = DeserializeLocalFileData(binlog_reader);
+            break;
         }
         default:
             PanicInfo(DataFormatBroken,
                       fmt::format("unsupported medium type {}", medium_type));
     }
+    return res;
 }
 
 }  // namespace milvus::storage

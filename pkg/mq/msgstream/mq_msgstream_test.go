@@ -37,6 +37,7 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
 	"github.com/milvus-io/milvus/pkg/config"
 	"github.com/milvus-io/milvus/pkg/mq/msgstream/mqwrapper"
+	kafkawrapper "github.com/milvus-io/milvus/pkg/mq/msgstream/mqwrapper/kafka"
 	pulsarwrapper "github.com/milvus-io/milvus/pkg/mq/msgstream/mqwrapper/pulsar"
 	"github.com/milvus-io/milvus/pkg/util/funcutil"
 	"github.com/milvus-io/milvus/pkg/util/paramtable"
@@ -516,7 +517,7 @@ func TestStream_PulsarMsgStream_SeekToLast(t *testing.T) {
 	defer outputStream2.Close()
 	assert.NoError(t, err)
 
-	err = outputStream2.Seek(ctx, []*msgpb.MsgPosition{seekPosition})
+	err = outputStream2.Seek(ctx, []*msgpb.MsgPosition{seekPosition}, false)
 	assert.NoError(t, err)
 
 	cnt := 0
@@ -945,7 +946,7 @@ func TestStream_MqMsgStream_Seek(t *testing.T) {
 	pulsarClient, _ := pulsarwrapper.NewClient(DefaultPulsarTenant, DefaultPulsarNamespace, pulsar.ClientOptions{URL: pulsarAddress})
 	outputStream2, _ := NewMqMsgStream(ctx, 100, 100, pulsarClient, factory.NewUnmarshalDispatcher())
 	outputStream2.AsConsumer(ctx, consumerChannels, consumerSubName, mqwrapper.SubscriptionPositionEarliest)
-	outputStream2.Seek(ctx, []*msgpb.MsgPosition{seekPosition})
+	outputStream2.Seek(ctx, []*msgpb.MsgPosition{seekPosition}, false)
 
 	for i := 6; i < 10; i++ {
 		result := consumer(ctx, outputStream2)
@@ -1000,7 +1001,7 @@ func TestStream_MqMsgStream_SeekInvalidMessage(t *testing.T) {
 		},
 	}
 
-	err = outputStream2.Seek(ctx, p)
+	err = outputStream2.Seek(ctx, p, false)
 	assert.NoError(t, err)
 
 	for i := 10; i < 20; i++ {
@@ -1011,6 +1012,74 @@ func TestStream_MqMsgStream_SeekInvalidMessage(t *testing.T) {
 	assert.NoError(t, err)
 	result := consumer(ctx, outputStream2)
 	assert.Equal(t, result.Msgs[0].ID(), int64(1))
+}
+
+func TestSTream_MqMsgStream_SeekBadMessageID(t *testing.T) {
+	pulsarAddress := getPulsarAddress()
+	c := funcutil.RandomString(8)
+	producerChannels := []string{c}
+	consumerChannels := []string{c}
+
+	msgPack := &MsgPack{}
+	ctx := context.Background()
+	inputStream := getPulsarInputStream(ctx, pulsarAddress, producerChannels)
+	defer inputStream.Close()
+
+	outputStream := getPulsarOutputStream(ctx, pulsarAddress, consumerChannels, funcutil.RandomString(8))
+	defer outputStream.Close()
+
+	for i := 0; i < 10; i++ {
+		insertMsg := getTsMsg(commonpb.MsgType_Insert, int64(i))
+		msgPack.Msgs = append(msgPack.Msgs, insertMsg)
+	}
+
+	err := inputStream.Produce(msgPack)
+	assert.NoError(t, err)
+	var seekPosition *msgpb.MsgPosition
+	for i := 0; i < 10; i++ {
+		result := consumer(ctx, outputStream)
+		assert.Equal(t, result.Msgs[0].ID(), int64(i))
+		seekPosition = result.EndPositions[0]
+	}
+
+	// produce timetick for mqtt msgstream seek
+	msgPack = &MsgPack{}
+	msgPack.Msgs = append(msgPack.Msgs, getTimeTickMsg(1000))
+	err = inputStream.Produce(msgPack)
+	assert.NoError(t, err)
+
+	factory := ProtoUDFactory{}
+	pulsarClient, _ := pulsarwrapper.NewClient(DefaultPulsarTenant, DefaultPulsarNamespace, pulsar.ClientOptions{URL: pulsarAddress})
+	outputStream2, _ := NewMqMsgStream(ctx, 100, 100, pulsarClient, factory.NewUnmarshalDispatcher())
+	outputStream2.AsConsumer(ctx, consumerChannels, funcutil.RandomString(8), mqwrapper.SubscriptionPositionLatest)
+	defer outputStream2.Close()
+
+	outputStream3, err := NewMqTtMsgStream(ctx, 100, 100, pulsarClient, factory.NewUnmarshalDispatcher())
+	outputStream3.AsConsumer(ctx, consumerChannels, funcutil.RandomString(8), mqwrapper.SubscriptionPositionEarliest)
+	require.NoError(t, err)
+
+	defer paramtable.Get().Reset(paramtable.Get().MQCfg.IgnoreBadPosition.Key)
+
+	p := []*msgpb.MsgPosition{
+		{
+			ChannelName: seekPosition.ChannelName,
+			Timestamp:   seekPosition.Timestamp,
+			MsgGroup:    seekPosition.MsgGroup,
+			MsgID:       kafkawrapper.SerializeKafkaID(123),
+		},
+	}
+
+	paramtable.Get().Save(paramtable.Get().MQCfg.IgnoreBadPosition.Key, "false")
+	err = outputStream2.Seek(ctx, p, false)
+	assert.Error(t, err)
+	err = outputStream3.Seek(ctx, p, false)
+	assert.Error(t, err)
+
+	paramtable.Get().Save(paramtable.Get().MQCfg.IgnoreBadPosition.Key, "true")
+	err = outputStream2.Seek(ctx, p, false)
+	assert.NoError(t, err)
+	err = outputStream3.Seek(ctx, p, false)
+	assert.NoError(t, err)
 }
 
 func TestStream_MqMsgStream_SeekLatest(t *testing.T) {
@@ -1397,7 +1466,7 @@ func getPulsarTtOutputStreamAndSeek(ctx context.Context, pulsarAddress string, p
 		consumerName = append(consumerName, c.ChannelName)
 	}
 	outputStream.AsConsumer(context.Background(), consumerName, funcutil.RandomString(8), mqwrapper.SubscriptionPositionUnknown)
-	outputStream.Seek(context.Background(), positions)
+	outputStream.Seek(context.Background(), positions, false)
 	return outputStream
 }
 

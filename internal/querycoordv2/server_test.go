@@ -436,17 +436,19 @@ func (suite *ServerSuite) loadAll() {
 	for _, collection := range suite.collections {
 		if suite.loadTypes[collection] == querypb.LoadType_LoadCollection {
 			req := &querypb.LoadCollectionRequest{
-				CollectionID:  collection,
-				ReplicaNumber: suite.replicaNumber[collection],
+				CollectionID:   collection,
+				ReplicaNumber:  suite.replicaNumber[collection],
+				ResourceGroups: []string{meta.DefaultResourceGroupName},
 			}
 			resp, err := suite.server.LoadCollection(ctx, req)
 			suite.NoError(err)
 			suite.Equal(commonpb.ErrorCode_Success, resp.ErrorCode)
 		} else {
 			req := &querypb.LoadPartitionsRequest{
-				CollectionID:  collection,
-				PartitionIDs:  suite.partitions[collection],
-				ReplicaNumber: suite.replicaNumber[collection],
+				CollectionID:   collection,
+				PartitionIDs:   suite.partitions[collection],
+				ReplicaNumber:  suite.replicaNumber[collection],
+				ResourceGroups: []string{meta.DefaultResourceGroupName},
 			}
 			resp, err := suite.server.LoadPartitions(ctx, req)
 			suite.NoError(err)
@@ -567,10 +569,10 @@ func (suite *ServerSuite) hackServer() {
 		suite.server.meta,
 		suite.server.dist,
 		suite.server.targetMgr,
-		suite.server.balancer,
 		suite.server.nodeMgr,
 		suite.server.taskScheduler,
 		suite.server.broker,
+		suite.server.getBalancerFunc,
 	)
 	suite.server.targetObserver = observers.NewTargetObserver(
 		suite.server.meta,

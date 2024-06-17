@@ -59,6 +59,30 @@ var (
 			msgTypeLabelName,
 		})
 
+	QueryNodeApplyBFCost = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.QueryNodeRole,
+			Name:      "apply_bf_latency",
+			Help:      "apply bf cost in ms",
+			Buckets:   buckets,
+		}, []string{
+			functionLabelName,
+			nodeIDLabelName,
+		})
+
+	QueryNodeForwardDeleteCost = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.QueryNodeRole,
+			Name:      "forward_delete_latency",
+			Help:      "forward delete cost in ms",
+			Buckets:   buckets,
+		}, []string{
+			functionLabelName,
+			nodeIDLabelName,
+		})
+
 	QueryNodeWaitProcessingMsgCount = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: milvusNamespace,
@@ -229,6 +253,7 @@ var (
 			nodeIDLabelName,
 			queryTypeLabelName,
 			reduceLevelName,
+			reduceType,
 		})
 
 	QueryNodeLoadSegmentLatency = prometheus.NewHistogramVec(
@@ -337,6 +362,18 @@ var (
 			nodeIDLabelName,
 		})
 
+	QueryNodeSegmentPruneRatio = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.QueryNodeRole,
+			Name:      "segment_prune_ratio",
+			Help:      "latency of compaction operation",
+			Buckets:   buckets,
+		}, []string{
+			collectionIDLabelName,
+			isVectorFieldLabelName,
+		})
+
 	QueryNodeEvictedReadReqCount = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: milvusNamespace,
@@ -369,7 +406,6 @@ var (
 			collectionIDLabelName,
 			partitionIDLabelName,
 			segmentStateLabelName,
-			indexCountLabelName,
 		})
 
 	QueryNodeEntitiesSize = prometheus.NewGaugeVec(
@@ -753,30 +789,37 @@ func RegisterQueryNode(registry *prometheus.Registry) {
 	registry.MustRegister(QueryNodeDiskCacheEvictBytes)
 	registry.MustRegister(QueryNodeDiskCacheEvictDuration)
 	registry.MustRegister(QueryNodeDiskCacheEvictGlobalDuration)
+	registry.MustRegister(QueryNodeSegmentPruneRatio)
+	registry.MustRegister(QueryNodeApplyBFCost)
+	registry.MustRegister(QueryNodeForwardDeleteCost)
 }
 
 func CleanupQueryNodeCollectionMetrics(nodeID int64, collectionID int64) {
-	for _, label := range []string{DeleteLabel, InsertLabel} {
-		QueryNodeConsumerMsgCount.
-			Delete(
-				prometheus.Labels{
-					nodeIDLabelName:       fmt.Sprint(nodeID),
-					msgTypeLabelName:      label,
-					collectionIDLabelName: fmt.Sprint(collectionID),
-				})
+	nodeIDLabel := fmt.Sprint(nodeID)
+	collectionIDLabel := fmt.Sprint(collectionID)
+	QueryNodeConsumerMsgCount.
+		DeletePartialMatch(
+			prometheus.Labels{
+				nodeIDLabelName:       nodeIDLabel,
+				collectionIDLabelName: collectionIDLabel,
+			})
 
-		QueryNodeConsumeTimeTickLag.
-			Delete(
-				prometheus.Labels{
-					nodeIDLabelName:       fmt.Sprint(nodeID),
-					msgTypeLabelName:      label,
-					collectionIDLabelName: fmt.Sprint(collectionID),
-				})
-		QueryNodeNumEntities.
-			DeletePartialMatch(
-				prometheus.Labels{
-					nodeIDLabelName:       fmt.Sprint(nodeID),
-					collectionIDLabelName: fmt.Sprint(collectionID),
-				})
-	}
+	QueryNodeConsumeTimeTickLag.
+		DeletePartialMatch(
+			prometheus.Labels{
+				nodeIDLabelName:       nodeIDLabel,
+				collectionIDLabelName: collectionIDLabel,
+			})
+	QueryNodeNumEntities.
+		DeletePartialMatch(
+			prometheus.Labels{
+				nodeIDLabelName:       nodeIDLabel,
+				collectionIDLabelName: collectionIDLabel,
+			})
+	QueryNodeEntitiesSize.
+		DeletePartialMatch(
+			prometheus.Labels{
+				nodeIDLabelName:       nodeIDLabel,
+				collectionIDLabelName: collectionIDLabel,
+			})
 }

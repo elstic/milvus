@@ -51,6 +51,20 @@ class ScalarIndex : public IndexBase {
     In(size_t n, const T* values) = 0;
 
     virtual const TargetBitmap
+    InApplyFilter(size_t n,
+                  const T* values,
+                  const std::function<bool(size_t /* offset */)>& filter) {
+        PanicInfo(ErrorCode::Unsupported, "InApplyFilter is not implemented");
+    }
+
+    virtual void
+    InApplyCallback(size_t n,
+                    const T* values,
+                    const std::function<void(size_t /* offset */)>& callback) {
+        PanicInfo(ErrorCode::Unsupported, "InApplyCallback is not implemented");
+    }
+
+    virtual const TargetBitmap
     NotIn(size_t n, const T* values) = 0;
 
     virtual const TargetBitmap
@@ -79,6 +93,16 @@ class ScalarIndex : public IndexBase {
     virtual const TargetBitmap
     RegexQuery(const std::string& pattern) {
         PanicInfo(Unsupported, "regex query is not supported");
+    }
+
+    virtual void
+    BuildWithFieldData(const std::vector<FieldDataPtr>& field_datas) {
+        PanicInfo(Unsupported, "BuildwithFieldData is not supported");
+    }
+
+    virtual void
+    LoadWithoutAssemble(const BinarySet& binary_set, const Config& config) {
+        PanicInfo(Unsupported, "LoadWithoutAssemble is not supported");
     }
 };
 

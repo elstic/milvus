@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget curl ca-ce
     wget -qO- "https://cmake.org/files/v3.27/cmake-3.27.5-linux-`uname -m`.tar.gz" | tar --strip-components=1 -xz -C /usr/local && \
     apt-get update && apt-get install -y --no-install-recommends \
     g++ gcc gfortran git make ccache libssl-dev zlib1g-dev zip unzip \
-    clang-format-10 clang-tidy-10 lcov libtool m4 autoconf automake python3 python3-pip \
+    clang-format-12 clang-tidy-12 lcov libtool m4 autoconf automake python3 python3-pip \
     pkg-config uuid-dev libaio-dev libgoogle-perftools-dev libopenblas-dev && \
     apt-get remove --purge -y && \
     rm -rf /var/lib/apt/lists/*
@@ -34,7 +34,7 @@ RUN /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics && ln -s /opt/vcpkg/vcpkg /usr
 
 RUN vcpkg install azure-identity-cpp azure-storage-blobs-cpp gtest
 
-# Instal openblas
+# Install openblas
 # RUN wget https://github.com/xianyi/OpenBLAS/archive/v0.3.21.tar.gz && \
 #    tar zxvf v0.3.21.tar.gz && cd OpenBLAS-0.3.21 && \
 #    make NO_STATIC=1 NO_LAPACK=1 NO_LAPACKE=1 NO_CBLAS=1 NO_AFFINITY=1 USE_OPENMP=1 \
@@ -51,7 +51,7 @@ ENV GOPATH /go
 ENV GOROOT /usr/local/go
 ENV GO111MODULE on
 ENV PATH $GOPATH/bin:$GOROOT/bin:$PATH
-RUN mkdir -p /usr/local/go && wget -qO- "https://go.dev/dl/go1.20.7.linux-$TARGETARCH.tar.gz" | tar --strip-components=1 -xz -C /usr/local/go && \
+RUN mkdir -p /usr/local/go && wget -qO- "https://go.dev/dl/go1.21.10.linux-$TARGETARCH.tar.gz" | tar --strip-components=1 -xz -C /usr/local/go && \
     mkdir -p "$GOPATH/src" "$GOPATH/bin" && \
     curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b ${GOROOT}/bin v1.46.2 && \
     # export GO111MODULE=on && go get github.com/quasilyte/go-ruleguard/cmd/ruleguard@v0.2.1 && \

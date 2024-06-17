@@ -313,6 +313,53 @@ func Test_AddSegments(t *testing.T) {
 		assert.Equal(t, 4, len(savedKvs))
 		verifySavedKvsForSegment(t, savedKvs)
 	})
+
+	t.Run("no need to store log path", func(t *testing.T) {
+		metakv := mocks.NewMetaKv(t)
+		catalog := NewCatalog(metakv, rootPath, "")
+
+		validFieldBinlog := []*datapb.FieldBinlog{{
+			FieldID: 1,
+			Binlogs: []*datapb.Binlog{
+				{
+					LogID:   1,
+					LogPath: "",
+				},
+			},
+		}}
+
+		invalidFieldBinlog := []*datapb.FieldBinlog{{
+			FieldID: 1,
+			Binlogs: []*datapb.Binlog{
+				{
+					LogID:   1,
+					LogPath: "no need to store",
+				},
+			},
+		}}
+
+		segment := &datapb.SegmentInfo{
+			ID:           segmentID,
+			CollectionID: collectionID,
+			PartitionID:  partitionID,
+			NumOfRows:    100,
+			State:        commonpb.SegmentState_Flushed,
+		}
+
+		segment.Statslogs = invalidFieldBinlog
+		err := catalog.AddSegment(context.TODO(), segment)
+		assert.Error(t, err)
+		segment.Statslogs = validFieldBinlog
+
+		segment.Binlogs = invalidFieldBinlog
+		err = catalog.AddSegment(context.TODO(), segment)
+		assert.Error(t, err)
+		segment.Binlogs = validFieldBinlog
+
+		segment.Deltalogs = invalidFieldBinlog
+		err = catalog.AddSegment(context.TODO(), segment)
+		assert.Error(t, err)
+	})
 }
 
 func Test_AlterSegments(t *testing.T) {
@@ -417,6 +464,44 @@ func Test_AlterSegments(t *testing.T) {
 		// Check that num of rows is corrected from 100 to 1275.
 		assert.Equal(t, int64(100), segmentXL.GetNumOfRows())
 		assert.Equal(t, int64(5), adjustedSeg.GetNumOfRows())
+	})
+
+	t.Run("invalid log id", func(t *testing.T) {
+		metakv := mocks.NewMetaKv(t)
+		catalog := NewCatalog(metakv, rootPath, "")
+
+		segment := &datapb.SegmentInfo{
+			ID:           segmentID,
+			CollectionID: collectionID,
+			PartitionID:  partitionID,
+			NumOfRows:    100,
+			State:        commonpb.SegmentState_Flushed,
+		}
+
+		invalidLogWithZeroLogID := []*datapb.FieldBinlog{{
+			FieldID: 1,
+			Binlogs: []*datapb.Binlog{
+				{
+					LogID:   0,
+					LogPath: "mock_log_path",
+				},
+			},
+		}}
+
+		segment.Statslogs = invalidLogWithZeroLogID
+		err := catalog.AlterSegments(context.TODO(), []*datapb.SegmentInfo{segment}, metastore.BinlogsIncrement{Segment: segment})
+		assert.Error(t, err)
+		t.Logf("%v", err)
+
+		segment.Deltalogs = invalidLogWithZeroLogID
+		err = catalog.AlterSegments(context.TODO(), []*datapb.SegmentInfo{segment}, metastore.BinlogsIncrement{Segment: segment})
+		assert.Error(t, err)
+		t.Logf("%v", err)
+
+		segment.Binlogs = invalidLogWithZeroLogID
+		err = catalog.AlterSegments(context.TODO(), []*datapb.SegmentInfo{segment}, metastore.BinlogsIncrement{Segment: segment})
+		assert.Error(t, err)
+		t.Logf("%v", err)
 	})
 }
 

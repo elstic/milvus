@@ -51,6 +51,7 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/proxyutil"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/pkg/common"
@@ -108,13 +109,15 @@ type Server struct {
 	checkerController *checkers.CheckerController
 
 	// Observers
-	collectionObserver *observers.CollectionObserver
-	targetObserver     *observers.TargetObserver
-	replicaObserver    *observers.ReplicaObserver
-	resourceObserver   *observers.ResourceObserver
+	collectionObserver  *observers.CollectionObserver
+	targetObserver      *observers.TargetObserver
+	replicaObserver     *observers.ReplicaObserver
+	resourceObserver    *observers.ResourceObserver
+	leaderCacheObserver *observers.LeaderCacheObserver
 
-	balancer    balance.Balance
-	balancerMap map[string]balance.Balance
+	getBalancerFunc checkers.GetBalancerFunc
+	balancerMap     map[string]balance.Balance
+	balancerLock    sync.RWMutex
 
 	// Active-standby
 	enableActiveStandBy bool
@@ -122,6 +125,11 @@ type Server struct {
 
 	nodeUpEventChan chan int64
 	notifyNodeUp    chan struct{}
+
+	// proxy client manager
+	proxyCreator       proxyutil.ProxyCreator
+	proxyWatcher       proxyutil.ProxyWatcherInterface
+	proxyClientManager proxyutil.ProxyClientManagerInterface
 }
 
 func NewQueryCoord(ctx context.Context) (*Server, error) {
@@ -131,6 +139,7 @@ func NewQueryCoord(ctx context.Context) (*Server, error) {
 		cancel:          cancel,
 		nodeUpEventChan: make(chan int64, 10240),
 		notifyNodeUp:    make(chan struct{}),
+		balancerMap:     make(map[string]balance.Balance),
 	}
 	server.UpdateStateCode(commonpb.StateCode_Abnormal)
 	server.queryNodeCreator = session.DefaultQueryNodeCreator
@@ -261,6 +270,16 @@ func (s *Server) initQueryCoord() error {
 		s.nodeMgr,
 	)
 
+	// init proxy client manager
+	s.proxyClientManager = proxyutil.NewProxyClientManager(proxyutil.DefaultProxyCreator)
+	s.proxyWatcher = proxyutil.NewProxyWatcher(
+		s.etcdCli,
+		s.proxyClientManager.AddProxyClients,
+	)
+	s.proxyWatcher.AddSessionFunc(s.proxyClientManager.AddProxyClient)
+	s.proxyWatcher.DelSessionFunc(s.proxyClientManager.DelProxyClient)
+	log.Info("init proxy manager done")
+
 	// Init heartbeat
 	log.Info("init dist controller")
 	s.distController = dist.NewDistController(
@@ -271,34 +290,46 @@ func (s *Server) initQueryCoord() error {
 		s.taskScheduler,
 	)
 
-	// Init balancer map and balancer
-	log.Info("init all available balancer")
-	s.balancerMap = make(map[string]balance.Balance)
-	s.balancerMap[balance.RoundRobinBalancerName] = balance.NewRoundRobinBalancer(s.taskScheduler, s.nodeMgr)
-	s.balancerMap[balance.RowCountBasedBalancerName] = balance.NewRowCountBasedBalancer(s.taskScheduler,
-		s.nodeMgr, s.dist, s.meta, s.targetMgr)
-	s.balancerMap[balance.ScoreBasedBalancerName] = balance.NewScoreBasedBalancer(s.taskScheduler,
-		s.nodeMgr, s.dist, s.meta, s.targetMgr)
-	s.balancerMap[balance.MultiTargetBalancerName] = balance.NewMultiTargetBalancer(s.taskScheduler, s.nodeMgr, s.dist, s.meta, s.targetMgr)
-
-	if balancer, ok := s.balancerMap[params.Params.QueryCoordCfg.Balancer.GetValue()]; ok {
-		s.balancer = balancer
-		log.Info("use config balancer", zap.String("balancer", params.Params.QueryCoordCfg.Balancer.GetValue()))
-	} else {
-		s.balancer = s.balancerMap[balance.RowCountBasedBalancerName]
-		log.Info("use rowCountBased auto balancer")
-	}
-
 	// Init checker controller
 	log.Info("init checker controller")
+	s.getBalancerFunc = func() balance.Balance {
+		balanceKey := paramtable.Get().QueryCoordCfg.Balancer.GetValue()
+		s.balancerLock.Lock()
+		defer s.balancerLock.Unlock()
+
+		balancer, ok := s.balancerMap[balanceKey]
+		if ok {
+			return balancer
+		}
+
+		log.Info("switch to new balancer", zap.String("name", balanceKey))
+		switch balanceKey {
+		case meta.RoundRobinBalancerName:
+			balancer = balance.NewRoundRobinBalancer(s.taskScheduler, s.nodeMgr)
+		case meta.RowCountBasedBalancerName:
+			balancer = balance.NewRowCountBasedBalancer(s.taskScheduler, s.nodeMgr, s.dist, s.meta, s.targetMgr)
+		case meta.ScoreBasedBalancerName:
+			balancer = balance.NewScoreBasedBalancer(s.taskScheduler, s.nodeMgr, s.dist, s.meta, s.targetMgr)
+		case meta.MultiTargetBalancerName:
+			balancer = balance.NewMultiTargetBalancer(s.taskScheduler, s.nodeMgr, s.dist, s.meta, s.targetMgr)
+		case meta.ChannelLevelScoreBalancerName:
+			balancer = balance.NewChannelLevelScoreBalancer(s.taskScheduler, s.nodeMgr, s.dist, s.meta, s.targetMgr)
+		default:
+			log.Info(fmt.Sprintf("default to use %s", meta.ScoreBasedBalancerName))
+			balancer = balance.NewScoreBasedBalancer(s.taskScheduler, s.nodeMgr, s.dist, s.meta, s.targetMgr)
+		}
+
+		s.balancerMap[balanceKey] = balancer
+		return balancer
+	}
 	s.checkerController = checkers.NewCheckerController(
 		s.meta,
 		s.dist,
 		s.targetMgr,
-		s.balancer,
 		s.nodeMgr,
 		s.taskScheduler,
 		s.broker,
+		s.getBalancerFunc,
 	)
 
 	// Init observers
@@ -387,6 +418,11 @@ func (s *Server) initObserver() {
 	)
 
 	s.resourceObserver = observers.NewResourceObserver(s.meta)
+
+	s.leaderCacheObserver = observers.NewLeaderCacheObserver(
+		s.proxyClientManager,
+	)
+	s.dist.LeaderViewManager.SetNotifyFunc(s.leaderCacheObserver.RegisterEvent)
 }
 
 func (s *Server) afterStart() {}
@@ -420,7 +456,7 @@ func (s *Server) startQueryCoord() error {
 			s.nodeMgr.Stopping(node.ServerID)
 		}
 	}
-	s.checkReplicas()
+	s.checkNodeStateInRG()
 	for _, node := range sessions {
 		s.handleNodeUp(node.ServerID)
 	}
@@ -432,8 +468,9 @@ func (s *Server) startQueryCoord() error {
 	// check whether old node exist, if yes suspend auto balance until all old nodes down
 	s.updateBalanceConfigLoop(s.ctx)
 
-	// Recover dist, to avoid generate too much task when dist not ready after restart
-	s.distController.SyncAll(s.ctx)
+	if err := s.proxyWatcher.WatchProxy(s.ctx); err != nil {
+		log.Warn("querycoord failed to watch proxy", zap.Error(err))
+	}
 
 	s.startServerLoop()
 	s.afterStart()
@@ -443,6 +480,11 @@ func (s *Server) startQueryCoord() error {
 }
 
 func (s *Server) startServerLoop() {
+	// leader cache observer shall be started before `SyncAll` call
+	s.leaderCacheObserver.Start(s.ctx)
+	// Recover dist, to avoid generate too much task when dist not ready after restart
+	s.distController.SyncAll(s.ctx)
+
 	// start the components from inside to outside,
 	// to make the dependencies ready for every component
 	log.Info("start cluster...")
@@ -503,6 +545,9 @@ func (s *Server) Stop() error {
 	}
 	if s.resourceObserver != nil {
 		s.resourceObserver.Stop()
+	}
+	if s.leaderCacheObserver != nil {
+		s.leaderCacheObserver.Stop()
 	}
 
 	if s.distController != nil {
@@ -655,6 +700,7 @@ func (s *Server) watchNodes(revision int64) {
 				)
 				s.nodeMgr.Stopping(nodeID)
 				s.checkerController.Check()
+				s.meta.ResourceManager.HandleNodeStopping(nodeID)
 
 			case sessionutil.SessionDelEvent:
 				nodeID := event.Session.ServerID
@@ -718,7 +764,6 @@ func (s *Server) handleNodeUp(node int64) {
 }
 
 func (s *Server) handleNodeDown(node int64) {
-	log := log.With(zap.Int64("nodeID", node))
 	s.taskScheduler.RemoveExecutor(node)
 	s.distController.Remove(node)
 
@@ -727,52 +772,21 @@ func (s *Server) handleNodeDown(node int64) {
 	s.dist.ChannelDistManager.Update(node)
 	s.dist.SegmentDistManager.Update(node)
 
-	// Clear meta
-	for _, collection := range s.meta.CollectionManager.GetAll() {
-		log := log.With(zap.Int64("collectionID", collection))
-		replica := s.meta.ReplicaManager.GetByCollectionAndNode(collection, node)
-		if replica == nil {
-			continue
-		}
-		err := s.meta.ReplicaManager.RemoveNode(replica.GetID(), node)
-		if err != nil {
-			log.Warn("failed to remove node from collection's replicas",
-				zap.Int64("replicaID", replica.GetID()),
-				zap.Error(err),
-			)
-		}
-		log.Info("remove node from replica",
-			zap.Int64("replicaID", replica.GetID()))
-	}
-
 	// Clear tasks
 	s.taskScheduler.RemoveByNode(node)
 
 	s.meta.ResourceManager.HandleNodeDown(node)
 }
 
-// checkReplicas checks whether replica contains offline node, and remove those nodes
-func (s *Server) checkReplicas() {
-	for _, collection := range s.meta.CollectionManager.GetAll() {
-		log := log.With(zap.Int64("collectionID", collection))
-		replicas := s.meta.ReplicaManager.GetByCollection(collection)
-		for _, replica := range replicas {
-			toRemove := make([]int64, 0)
-			for _, node := range replica.GetNodes() {
-				if s.nodeMgr.Get(node) == nil {
-					toRemove = append(toRemove, node)
-				}
-			}
-
-			if len(toRemove) > 0 {
-				log := log.With(
-					zap.Int64("replicaID", replica.GetID()),
-					zap.Int64s("offlineNodes", toRemove),
-				)
-				log.Info("some nodes are offline, remove them from replica", zap.Any("toRemove", toRemove))
-				if err := s.meta.ReplicaManager.RemoveNode(replica.GetID(), toRemove...); err != nil {
-					log.Warn("failed to remove offline nodes from replica")
-				}
+func (s *Server) checkNodeStateInRG() {
+	for _, rgName := range s.meta.ListResourceGroups() {
+		rg := s.meta.ResourceManager.GetResourceGroup(rgName)
+		for _, node := range rg.GetNodes() {
+			info := s.nodeMgr.Get(node)
+			if info == nil {
+				s.meta.ResourceManager.HandleNodeDown(node)
+			} else if info.IsStoppingState() {
+				s.meta.ResourceManager.HandleNodeStopping(node)
 			}
 		}
 	}

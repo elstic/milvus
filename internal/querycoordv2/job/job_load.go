@@ -152,17 +152,18 @@ func (job *LoadCollectionJob) Execute() error {
 	// 2. create replica if not exist
 	replicas := job.meta.ReplicaManager.GetByCollection(req.GetCollectionID())
 	if len(replicas) == 0 {
+		collectionInfo, err := job.broker.DescribeCollection(job.ctx, req.GetCollectionID())
+		if err != nil {
+			return err
+		}
+
 		// API of LoadCollection is wired, we should use map[resourceGroupNames]replicaNumber as input, to keep consistency with `TransferReplica` API.
 		// Then we can implement dynamic replica changed in different resource group independently.
-		replicas, err = utils.SpawnReplicasWithRG(job.meta, req.GetCollectionID(), req.GetResourceGroups(), req.GetReplicaNumber())
+		_, err = utils.SpawnReplicasWithRG(job.meta, req.GetCollectionID(), req.GetResourceGroups(), req.GetReplicaNumber(), collectionInfo.GetVirtualChannelNames())
 		if err != nil {
 			msg := "failed to spawn replica for collection"
 			log.Warn(msg, zap.Error(err))
 			return errors.Wrap(err, msg)
-		}
-		for _, replica := range replicas {
-			log.Info("replica created", zap.Int64("replicaID", replica.GetID()),
-				zap.Int64s("nodes", replica.GetNodes()), zap.String("resourceGroup", replica.GetResourceGroup()))
 		}
 		job.undo.IsReplicaCreated = true
 	}
@@ -337,15 +338,15 @@ func (job *LoadPartitionJob) Execute() error {
 	// 2. create replica if not exist
 	replicas := job.meta.ReplicaManager.GetByCollection(req.GetCollectionID())
 	if len(replicas) == 0 {
-		replicas, err = utils.SpawnReplicasWithRG(job.meta, req.GetCollectionID(), req.GetResourceGroups(), req.GetReplicaNumber())
+		collectionInfo, err := job.broker.DescribeCollection(job.ctx, req.GetCollectionID())
+		if err != nil {
+			return err
+		}
+		_, err = utils.SpawnReplicasWithRG(job.meta, req.GetCollectionID(), req.GetResourceGroups(), req.GetReplicaNumber(), collectionInfo.GetVirtualChannelNames())
 		if err != nil {
 			msg := "failed to spawn replica for collection"
 			log.Warn(msg, zap.Error(err))
 			return errors.Wrap(err, msg)
-		}
-		for _, replica := range replicas {
-			log.Info("replica created", zap.Int64("replicaID", replica.GetID()),
-				zap.Int64s("nodes", replica.GetNodes()), zap.String("resourceGroup", replica.GetResourceGroup()))
 		}
 		job.undo.IsReplicaCreated = true
 	}

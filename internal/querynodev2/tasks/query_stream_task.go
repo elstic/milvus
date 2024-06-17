@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 
+	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/querynodev2/segments"
 	"github.com/milvus-io/milvus/internal/util/streamrpc"
@@ -15,6 +16,7 @@ func NewQueryStreamTask(ctx context.Context,
 	manager *segments.Manager,
 	req *querypb.QueryRequest,
 	srv streamrpc.QueryStreamServer,
+	streamBatchSize int,
 ) *QueryStreamTask {
 	return &QueryStreamTask{
 		ctx:            ctx,
@@ -22,6 +24,7 @@ func NewQueryStreamTask(ctx context.Context,
 		segmentManager: manager,
 		req:            req,
 		srv:            srv,
+		batchSize:      streamBatchSize,
 		notifier:       make(chan error, 1),
 	}
 }
@@ -32,6 +35,7 @@ type QueryStreamTask struct {
 	segmentManager *segments.Manager
 	req            *querypb.QueryRequest
 	srv            streamrpc.QueryStreamServer
+	batchSize      int
 	notifier       chan error
 }
 
@@ -63,7 +67,10 @@ func (t *QueryStreamTask) Execute() error {
 	}
 	defer retrievePlan.Delete()
 
-	segments, err := segments.RetrieveStream(t.ctx, t.segmentManager, retrievePlan, t.req, t.srv)
+	srv := streamrpc.NewResultCacheServer(t.srv, t.batchSize)
+	defer srv.Flush()
+
+	segments, err := segments.RetrieveStream(t.ctx, t.segmentManager, retrievePlan, t.req, srv)
 	defer t.segmentManager.Segment.Unpin(segments)
 	if err != nil {
 		return err
@@ -85,4 +92,8 @@ func (t *QueryStreamTask) Wait() error {
 
 func (t *QueryStreamTask) NQ() int64 {
 	return 1
+}
+
+func (t *QueryStreamTask) SearchResult() *internalpb.SearchResults {
+	return nil
 }

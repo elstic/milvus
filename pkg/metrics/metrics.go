@@ -66,11 +66,16 @@ const (
 	ReduceSegments = "segments"
 	ReduceShards   = "shards"
 
+	BatchReduce  = "batch_reduce"
+	StreamReduce = "stream_reduce"
+
 	Pending   = "pending"
 	Executing = "executing"
 	Done      = "done"
 
 	compactionTypeLabelName  = "compaction_type"
+	isVectorFieldLabelName   = "is_vector_field"
+	stageLabelName           = "compaction_stage"
 	nodeIDLabelName          = "node_id"
 	statusLabelName          = "status"
 	indexTaskStatusLabelName = "index_task_status"
@@ -96,6 +101,7 @@ const (
 	requestScope             = "scope"
 	fullMethodLabelName      = "full_method"
 	reduceLevelName          = "reduce_level"
+	reduceType               = "reduce_type"
 	lockName                 = "lock_name"
 	lockSource               = "lock_source"
 	lockType                 = "lock_type"

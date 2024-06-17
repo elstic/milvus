@@ -25,7 +25,6 @@ import (
 
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/params"
-	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
 	"github.com/milvus-io/milvus/pkg/log"
 	"github.com/milvus-io/milvus/pkg/util/syncutil"
 )
@@ -99,10 +98,6 @@ func (ob *ResourceObserver) checkAndRecoverResourceGroup() {
 		manager.AssignPendingIncomingNode()
 	}
 
-	// Remove all down nodes in resource group manager.
-	log.Debug("remove all down nodes in resource group manager...")
-	ob.meta.RemoveAllDownNode()
-
 	log.Debug("recover resource groups...")
 	// Recover all resource group into expected configuration.
 	for _, rgName := range rgNames {
@@ -122,9 +117,6 @@ func (ob *ResourceObserver) checkAndRecoverResourceGroup() {
 				}
 			}
 		}
-	}
-	if enableRGAutoRecover {
-		utils.RecoverAllCollection(ob.meta)
 	}
 	log.Debug("check resource group done", zap.Bool("enableRGAutoRecover", enableRGAutoRecover), zap.Int("resourceGroupNum", len(rgNames)))
 }

@@ -22,12 +22,15 @@ import (
 
 	"github.com/cockroachdb/errors"
 	"github.com/golang/protobuf/proto"
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
+	"github.com/milvus-io/milvus/internal/datacoord/broker"
 	"github.com/milvus-io/milvus/internal/kv"
 	mockkv "github.com/milvus-io/milvus/internal/kv/mocks"
 	"github.com/milvus-io/milvus/internal/metastore/kv/datacoord"
@@ -68,6 +71,9 @@ func (suite *MetaReloadSuite) TestReloadFromKV() {
 		suite.catalog.EXPECT().ListSegments(mock.Anything).Return(nil, errors.New("mock"))
 		suite.catalog.EXPECT().ListIndexes(mock.Anything).Return([]*model.Index{}, nil)
 		suite.catalog.EXPECT().ListSegmentIndexes(mock.Anything).Return([]*model.SegmentIndex{}, nil)
+		suite.catalog.EXPECT().ListAnalyzeTasks(mock.Anything).Return(nil, nil)
+		suite.catalog.EXPECT().ListCompactionTask(mock.Anything).Return(nil, nil)
+		suite.catalog.EXPECT().ListPartitionStatsInfos(mock.Anything).Return(nil, nil)
 
 		_, err := newMeta(ctx, suite.catalog, nil)
 		suite.Error(err)
@@ -80,6 +86,9 @@ func (suite *MetaReloadSuite) TestReloadFromKV() {
 		suite.catalog.EXPECT().ListChannelCheckpoint(mock.Anything).Return(nil, errors.New("mock"))
 		suite.catalog.EXPECT().ListIndexes(mock.Anything).Return([]*model.Index{}, nil)
 		suite.catalog.EXPECT().ListSegmentIndexes(mock.Anything).Return([]*model.SegmentIndex{}, nil)
+		suite.catalog.EXPECT().ListAnalyzeTasks(mock.Anything).Return(nil, nil)
+		suite.catalog.EXPECT().ListCompactionTask(mock.Anything).Return(nil, nil)
+		suite.catalog.EXPECT().ListPartitionStatsInfos(mock.Anything).Return(nil, nil)
 
 		_, err := newMeta(ctx, suite.catalog, nil)
 		suite.Error(err)
@@ -89,6 +98,9 @@ func (suite *MetaReloadSuite) TestReloadFromKV() {
 		defer suite.resetMock()
 		suite.catalog.EXPECT().ListIndexes(mock.Anything).Return([]*model.Index{}, nil)
 		suite.catalog.EXPECT().ListSegmentIndexes(mock.Anything).Return([]*model.SegmentIndex{}, nil)
+		suite.catalog.EXPECT().ListAnalyzeTasks(mock.Anything).Return(nil, nil)
+		suite.catalog.EXPECT().ListCompactionTask(mock.Anything).Return(nil, nil)
+		suite.catalog.EXPECT().ListPartitionStatsInfos(mock.Anything).Return(nil, nil)
 		suite.catalog.EXPECT().ListSegments(mock.Anything).Return([]*datapb.SegmentInfo{
 			{
 				ID:           1,
@@ -615,6 +627,21 @@ func TestMeta_Basic(t *testing.T) {
 		assert.Equal(t, int64(size0+size1), total)
 	})
 
+	t.Run("Test GetCollectionBinlogSize", func(t *testing.T) {
+		meta := createMeta(&datacoord.Catalog{}, nil, createIndexMeta(&datacoord.Catalog{}))
+		ret := meta.GetCollectionIndexFilesSize()
+		assert.Equal(t, uint64(0), ret)
+
+		meta.collections = map[UniqueID]*collectionInfo{
+			100: {
+				ID:           100,
+				DatabaseName: "db",
+			},
+		}
+		ret = meta.GetCollectionIndexFilesSize()
+		assert.Equal(t, uint64(11), ret)
+	})
+
 	t.Run("Test AddAllocation", func(t *testing.T) {
 		meta, _ := newMemoryMeta()
 		err := meta.AddAllocation(1, &Allocation{
@@ -661,8 +688,8 @@ func TestUpdateSegmentsInfo(t *testing.T) {
 
 		segment1 := &SegmentInfo{SegmentInfo: &datapb.SegmentInfo{
 			ID: 1, State: commonpb.SegmentState_Growing,
-			Binlogs:   []*datapb.FieldBinlog{getFieldBinlogIDs(1, 0)},
-			Statslogs: []*datapb.FieldBinlog{getFieldBinlogIDs(1, 0)},
+			Binlogs:   []*datapb.FieldBinlog{getFieldBinlogIDs(1, 2)},
+			Statslogs: []*datapb.FieldBinlog{getFieldBinlogIDs(1, 2)},
 		}}
 		err = meta.AddSegment(context.TODO(), segment1)
 		assert.NoError(t, err)
@@ -672,7 +699,7 @@ func TestUpdateSegmentsInfo(t *testing.T) {
 			AddBinlogsOperator(1,
 				[]*datapb.FieldBinlog{getFieldBinlogIDsWithEntry(1, 10, 1)},
 				[]*datapb.FieldBinlog{getFieldBinlogIDs(1, 1)},
-				[]*datapb.FieldBinlog{{Binlogs: []*datapb.Binlog{{EntriesNum: 1, TimestampFrom: 100, TimestampTo: 200, LogSize: 1000, LogPath: getDeltaLogPath("deltalog1", 1)}}}},
+				[]*datapb.FieldBinlog{{Binlogs: []*datapb.Binlog{{EntriesNum: 1, TimestampFrom: 100, TimestampTo: 200, LogSize: 1000, LogPath: "", LogID: 2}}}},
 			),
 			UpdateStartPosition([]*datapb.SegmentStartPosition{{SegmentID: 1, StartPosition: &msgpb.MsgPosition{MsgID: []byte{1, 2, 3}}}}),
 			UpdateCheckPointOperator(1, []*datapb.CheckPoint{{SegmentID: 1, NumOfRows: 10}}),
@@ -712,8 +739,8 @@ func TestUpdateSegmentsInfo(t *testing.T) {
 		// normal
 		segment1 := &SegmentInfo{SegmentInfo: &datapb.SegmentInfo{
 			ID: 1, State: commonpb.SegmentState_Flushed,
-			Binlogs:   []*datapb.FieldBinlog{getFieldBinlogIDs(1, 0)},
-			Statslogs: []*datapb.FieldBinlog{getFieldBinlogIDs(1, 0)},
+			Binlogs:   []*datapb.FieldBinlog{getFieldBinlogIDs(1, 2)},
+			Statslogs: []*datapb.FieldBinlog{getFieldBinlogIDs(1, 2)},
 		}}
 		err = meta.AddSegment(context.TODO(), segment1)
 		assert.NoError(t, err)
@@ -811,9 +838,9 @@ func TestUpdateSegmentsInfo(t *testing.T) {
 		err = meta.UpdateSegmentsInfo(
 			UpdateStatusOperator(1, commonpb.SegmentState_Flushing),
 			AddBinlogsOperator(1,
-				[]*datapb.FieldBinlog{getFieldBinlogIDs(1, 0)},
-				[]*datapb.FieldBinlog{getFieldBinlogIDs(1, 0)},
-				[]*datapb.FieldBinlog{{Binlogs: []*datapb.Binlog{{EntriesNum: 1, TimestampFrom: 100, TimestampTo: 200, LogSize: 1000, LogPath: getDeltaLogPath("deltalog", 1)}}}},
+				[]*datapb.FieldBinlog{getFieldBinlogIDs(1, 2)},
+				[]*datapb.FieldBinlog{getFieldBinlogIDs(1, 2)},
+				[]*datapb.FieldBinlog{{Binlogs: []*datapb.Binlog{{EntriesNum: 1, TimestampFrom: 100, TimestampTo: 200, LogSize: 1000, LogPath: "", LogID: 2}}}},
 			),
 			UpdateStartPosition([]*datapb.SegmentStartPosition{{SegmentID: 1, StartPosition: &msgpb.MsgPosition{MsgID: []byte{1, 2, 3}}}}),
 			UpdateCheckPointOperator(1, []*datapb.CheckPoint{{SegmentID: 1, NumOfRows: 10}}),
@@ -965,6 +992,97 @@ func Test_meta_GetSegmentsOfCollection(t *testing.T) {
 		assert.True(t, ok)
 		assert.Equal(t, expected, gotInfo.GetState())
 	}
+
+	got = m.GetSegmentsOfCollection(-1)
+	assert.Equal(t, 3, len(got))
+
+	got = m.GetSegmentsOfCollection(10)
+	assert.Equal(t, 0, len(got))
+}
+
+func Test_meta_GetSegmentsWithChannel(t *testing.T) {
+	storedSegments := NewSegmentsInfo()
+	for segID, segment := range map[int64]*SegmentInfo{
+		1: {
+			SegmentInfo: &datapb.SegmentInfo{
+				ID:            1,
+				CollectionID:  1,
+				InsertChannel: "h1",
+				State:         commonpb.SegmentState_Flushed,
+			},
+		},
+		2: {
+			SegmentInfo: &datapb.SegmentInfo{
+				ID:            2,
+				CollectionID:  1,
+				InsertChannel: "h2",
+				State:         commonpb.SegmentState_Growing,
+			},
+		},
+		3: {
+			SegmentInfo: &datapb.SegmentInfo{
+				ID:            3,
+				CollectionID:  2,
+				State:         commonpb.SegmentState_Flushed,
+				InsertChannel: "h1",
+			},
+		},
+	} {
+		storedSegments.SetSegment(segID, segment)
+	}
+	m := &meta{segments: storedSegments}
+	got := m.GetSegmentsByChannel("h1")
+	assert.Equal(t, 2, len(got))
+	assert.ElementsMatch(t, []int64{1, 3}, lo.Map(
+		got,
+		func(s *SegmentInfo, i int) int64 {
+			return s.ID
+		},
+	))
+
+	got = m.GetSegmentsByChannel("h3")
+	assert.Equal(t, 0, len(got))
+
+	got = m.SelectSegments(WithCollection(1), WithChannel("h1"), SegmentFilterFunc(func(segment *SegmentInfo) bool {
+		return segment != nil && segment.GetState() == commonpb.SegmentState_Flushed
+	}))
+	assert.Equal(t, 1, len(got))
+	assert.ElementsMatch(t, []int64{1}, lo.Map(
+		got,
+		func(s *SegmentInfo, i int) int64 {
+			return s.ID
+		},
+	))
+
+	m.segments.DropSegment(3)
+	_, ok := m.segments.secondaryIndexes.coll2Segments[2]
+	assert.False(t, ok)
+	assert.Equal(t, 1, len(m.segments.secondaryIndexes.coll2Segments))
+	assert.Equal(t, 2, len(m.segments.secondaryIndexes.channel2Segments))
+
+	segments, ok := m.segments.secondaryIndexes.channel2Segments["h1"]
+	assert.True(t, ok)
+	assert.Equal(t, 1, len(segments))
+	assert.Equal(t, int64(1), segments[1].ID)
+	segments, ok = m.segments.secondaryIndexes.channel2Segments["h2"]
+	assert.True(t, ok)
+	assert.Equal(t, 1, len(segments))
+	assert.Equal(t, int64(2), segments[2].ID)
+
+	m.segments.DropSegment(2)
+	segments, ok = m.segments.secondaryIndexes.coll2Segments[1]
+	assert.True(t, ok)
+	assert.Equal(t, 1, len(segments))
+	assert.Equal(t, int64(1), segments[1].ID)
+	assert.Equal(t, 1, len(m.segments.secondaryIndexes.coll2Segments))
+	assert.Equal(t, 1, len(m.segments.secondaryIndexes.channel2Segments))
+
+	segments, ok = m.segments.secondaryIndexes.channel2Segments["h1"]
+	assert.True(t, ok)
+	assert.Equal(t, 1, len(segments))
+	assert.Equal(t, int64(1), segments[1].ID)
+	_, ok = m.segments.secondaryIndexes.channel2Segments["h2"]
+	assert.False(t, ok)
 }
 
 func TestMeta_HasSegments(t *testing.T) {
@@ -1113,4 +1231,90 @@ func Test_meta_GcConfirm(t *testing.T) {
 		Return(false)
 
 	assert.False(t, m.GcConfirm(context.TODO(), 100, 10000))
+}
+
+func Test_meta_ReloadCollectionsFromRootcoords(t *testing.T) {
+	t.Run("fail to list database", func(t *testing.T) {
+		m := &meta{
+			collections: make(map[UniqueID]*collectionInfo),
+		}
+		mockBroker := broker.NewMockBroker(t)
+		mockBroker.EXPECT().ListDatabases(mock.Anything).Return(nil, errors.New("list database failed, mocked"))
+		err := m.reloadCollectionsFromRootcoord(context.TODO(), mockBroker)
+		assert.Error(t, err)
+	})
+
+	t.Run("fail to show collections", func(t *testing.T) {
+		m := &meta{
+			collections: make(map[UniqueID]*collectionInfo),
+		}
+		mockBroker := broker.NewMockBroker(t)
+
+		mockBroker.EXPECT().ListDatabases(mock.Anything).Return(&milvuspb.ListDatabasesResponse{
+			DbNames: []string{"db1"},
+		}, nil)
+		mockBroker.EXPECT().ShowCollections(mock.Anything, mock.Anything).Return(nil, errors.New("show collections failed, mocked"))
+		err := m.reloadCollectionsFromRootcoord(context.TODO(), mockBroker)
+		assert.Error(t, err)
+	})
+
+	t.Run("fail to describe collection", func(t *testing.T) {
+		m := &meta{
+			collections: make(map[UniqueID]*collectionInfo),
+		}
+		mockBroker := broker.NewMockBroker(t)
+
+		mockBroker.EXPECT().ListDatabases(mock.Anything).Return(&milvuspb.ListDatabasesResponse{
+			DbNames: []string{"db1"},
+		}, nil)
+		mockBroker.EXPECT().ShowCollections(mock.Anything, mock.Anything).Return(&milvuspb.ShowCollectionsResponse{
+			CollectionNames: []string{"coll1"},
+			CollectionIds:   []int64{1000},
+		}, nil)
+		mockBroker.EXPECT().DescribeCollectionInternal(mock.Anything, mock.Anything).Return(nil, errors.New("describe collection failed, mocked"))
+		err := m.reloadCollectionsFromRootcoord(context.TODO(), mockBroker)
+		assert.Error(t, err)
+	})
+
+	t.Run("fail to show partitions", func(t *testing.T) {
+		m := &meta{
+			collections: make(map[UniqueID]*collectionInfo),
+		}
+		mockBroker := broker.NewMockBroker(t)
+
+		mockBroker.EXPECT().ListDatabases(mock.Anything).Return(&milvuspb.ListDatabasesResponse{
+			DbNames: []string{"db1"},
+		}, nil)
+		mockBroker.EXPECT().ShowCollections(mock.Anything, mock.Anything).Return(&milvuspb.ShowCollectionsResponse{
+			CollectionNames: []string{"coll1"},
+			CollectionIds:   []int64{1000},
+		}, nil)
+		mockBroker.EXPECT().DescribeCollectionInternal(mock.Anything, mock.Anything).Return(&milvuspb.DescribeCollectionResponse{}, nil)
+		mockBroker.EXPECT().ShowPartitionsInternal(mock.Anything, mock.Anything).Return(nil, errors.New("show partitions failed, mocked"))
+		err := m.reloadCollectionsFromRootcoord(context.TODO(), mockBroker)
+		assert.Error(t, err)
+	})
+
+	t.Run("success", func(t *testing.T) {
+		m := &meta{
+			collections: make(map[UniqueID]*collectionInfo),
+		}
+		mockBroker := broker.NewMockBroker(t)
+
+		mockBroker.EXPECT().ListDatabases(mock.Anything).Return(&milvuspb.ListDatabasesResponse{
+			DbNames: []string{"db1"},
+		}, nil)
+		mockBroker.EXPECT().ShowCollections(mock.Anything, mock.Anything).Return(&milvuspb.ShowCollectionsResponse{
+			CollectionNames: []string{"coll1"},
+			CollectionIds:   []int64{1000},
+		}, nil)
+		mockBroker.EXPECT().DescribeCollectionInternal(mock.Anything, mock.Anything).Return(&milvuspb.DescribeCollectionResponse{
+			CollectionID: 1000,
+		}, nil)
+		mockBroker.EXPECT().ShowPartitionsInternal(mock.Anything, mock.Anything).Return([]int64{2000}, nil)
+		err := m.reloadCollectionsFromRootcoord(context.TODO(), mockBroker)
+		assert.NoError(t, err)
+		c := m.GetCollection(UniqueID(1000))
+		assert.NotNil(t, c)
+	})
 }

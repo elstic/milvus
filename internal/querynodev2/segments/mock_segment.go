@@ -9,6 +9,8 @@ import (
 
 	datapb "github.com/milvus-io/milvus/internal/proto/datapb"
 
+	metautil "github.com/milvus-io/milvus/pkg/util/metautil"
+
 	mock "github.com/stretchr/testify/mock"
 
 	msgpb "github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
@@ -31,6 +33,50 @@ type MockSegment_Expecter struct {
 
 func (_m *MockSegment) EXPECT() *MockSegment_Expecter {
 	return &MockSegment_Expecter{mock: &_m.Mock}
+}
+
+// BatchPkExist provides a mock function with given fields: lc
+func (_m *MockSegment) BatchPkExist(lc *storage.BatchLocationsCache) []bool {
+	ret := _m.Called(lc)
+
+	var r0 []bool
+	if rf, ok := ret.Get(0).(func(*storage.BatchLocationsCache) []bool); ok {
+		r0 = rf(lc)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]bool)
+		}
+	}
+
+	return r0
+}
+
+// MockSegment_BatchTestLocationCache_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'BatchPkExist'
+type MockSegment_BatchTestLocationCache_Call struct {
+	*mock.Call
+}
+
+// BatchPkExist is a helper method to define mock.On call
+//   - lc *storage.BatchLocationsCache
+func (_e *MockSegment_Expecter) BatchPkExist(lc interface{}) *MockSegment_BatchTestLocationCache_Call {
+	return &MockSegment_BatchTestLocationCache_Call{Call: _e.mock.On("BatchPkExist", lc)}
+}
+
+func (_c *MockSegment_BatchTestLocationCache_Call) Run(run func(lc *storage.BatchLocationsCache)) *MockSegment_BatchTestLocationCache_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(*storage.BatchLocationsCache))
+	})
+	return _c
+}
+
+func (_c *MockSegment_BatchTestLocationCache_Call) Return(_a0 []bool) *MockSegment_BatchTestLocationCache_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockSegment_BatchTestLocationCache_Call) RunAndReturn(run func(*storage.BatchLocationsCache) []bool) *MockSegment_BatchTestLocationCache_Call {
+	_c.Call.Return(run)
+	return _c
 }
 
 // CASVersion provides a mock function with given fields: _a0, _a1
@@ -709,54 +755,13 @@ func (_c *MockSegment_LoadInfo_Call) RunAndReturn(run func() *querypb.SegmentLoa
 	return _c
 }
 
-// LoadStatus provides a mock function with given fields:
-func (_m *MockSegment) LoadStatus() LoadStatus {
-	ret := _m.Called()
-
-	var r0 LoadStatus
-	if rf, ok := ret.Get(0).(func() LoadStatus); ok {
-		r0 = rf()
-	} else {
-		r0 = ret.Get(0).(LoadStatus)
-	}
-
-	return r0
-}
-
-// MockSegment_LoadStatus_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'LoadStatus'
-type MockSegment_LoadStatus_Call struct {
-	*mock.Call
-}
-
-// LoadStatus is a helper method to define mock.On call
-func (_e *MockSegment_Expecter) LoadStatus() *MockSegment_LoadStatus_Call {
-	return &MockSegment_LoadStatus_Call{Call: _e.mock.On("LoadStatus")}
-}
-
-func (_c *MockSegment_LoadStatus_Call) Run(run func()) *MockSegment_LoadStatus_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run()
-	})
-	return _c
-}
-
-func (_c *MockSegment_LoadStatus_Call) Return(_a0 LoadStatus) *MockSegment_LoadStatus_Call {
-	_c.Call.Return(_a0)
-	return _c
-}
-
-func (_c *MockSegment_LoadStatus_Call) RunAndReturn(run func() LoadStatus) *MockSegment_LoadStatus_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
-// MayPkExist provides a mock function with given fields: pk
-func (_m *MockSegment) MayPkExist(pk storage.PrimaryKey) bool {
-	ret := _m.Called(pk)
+// MayPkExist provides a mock function with given fields: lc
+func (_m *MockSegment) MayPkExist(lc *storage.LocationsCache) bool {
+	ret := _m.Called(lc)
 
 	var r0 bool
-	if rf, ok := ret.Get(0).(func(storage.PrimaryKey) bool); ok {
-		r0 = rf(pk)
+	if rf, ok := ret.Get(0).(func(*storage.LocationsCache) bool); ok {
+		r0 = rf(lc)
 	} else {
 		r0 = ret.Get(0).(bool)
 	}
@@ -770,14 +775,14 @@ type MockSegment_MayPkExist_Call struct {
 }
 
 // MayPkExist is a helper method to define mock.On call
-//   - pk storage.PrimaryKey
-func (_e *MockSegment_Expecter) MayPkExist(pk interface{}) *MockSegment_MayPkExist_Call {
-	return &MockSegment_MayPkExist_Call{Call: _e.mock.On("MayPkExist", pk)}
+//   - lc *storage.LocationsCache
+func (_e *MockSegment_Expecter) MayPkExist(lc interface{}) *MockSegment_MayPkExist_Call {
+	return &MockSegment_MayPkExist_Call{Call: _e.mock.On("MayPkExist", lc)}
 }
 
-func (_c *MockSegment_MayPkExist_Call) Run(run func(pk storage.PrimaryKey)) *MockSegment_MayPkExist_Call {
+func (_c *MockSegment_MayPkExist_Call) Run(run func(lc *storage.LocationsCache)) *MockSegment_MayPkExist_Call {
 	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(storage.PrimaryKey))
+		run(args[0].(*storage.LocationsCache))
 	})
 	return _c
 }
@@ -787,7 +792,7 @@ func (_c *MockSegment_MayPkExist_Call) Return(_a0 bool) *MockSegment_MayPkExist_
 	return _c
 }
 
-func (_c *MockSegment_MayPkExist_Call) RunAndReturn(run func(storage.PrimaryKey) bool) *MockSegment_MayPkExist_Call {
+func (_c *MockSegment_MayPkExist_Call) RunAndReturn(run func(*storage.LocationsCache) bool) *MockSegment_MayPkExist_Call {
 	_c.Call.Return(run)
 	return _c
 }
@@ -829,6 +834,47 @@ func (_c *MockSegment_MemSize_Call) Return(_a0 int64) *MockSegment_MemSize_Call 
 }
 
 func (_c *MockSegment_MemSize_Call) RunAndReturn(run func() int64) *MockSegment_MemSize_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// NeedUpdatedVersion provides a mock function with given fields:
+func (_m *MockSegment) NeedUpdatedVersion() int64 {
+	ret := _m.Called()
+
+	var r0 int64
+	if rf, ok := ret.Get(0).(func() int64); ok {
+		r0 = rf()
+	} else {
+		r0 = ret.Get(0).(int64)
+	}
+
+	return r0
+}
+
+// MockSegment_NeedUpdatedVersion_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'NeedUpdatedVersion'
+type MockSegment_NeedUpdatedVersion_Call struct {
+	*mock.Call
+}
+
+// NeedUpdatedVersion is a helper method to define mock.On call
+func (_e *MockSegment_Expecter) NeedUpdatedVersion() *MockSegment_NeedUpdatedVersion_Call {
+	return &MockSegment_NeedUpdatedVersion_Call{Call: _e.mock.On("NeedUpdatedVersion")}
+}
+
+func (_c *MockSegment_NeedUpdatedVersion_Call) Run(run func()) *MockSegment_NeedUpdatedVersion_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockSegment_NeedUpdatedVersion_Call) Return(_a0 int64) *MockSegment_NeedUpdatedVersion_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockSegment_NeedUpdatedVersion_Call) RunAndReturn(run func() int64) *MockSegment_NeedUpdatedVersion_Call {
 	_c.Call.Return(run)
 	return _c
 }
@@ -888,72 +934,41 @@ func (_m *MockSegment) PinIfNotReleased() error {
 	return r0
 }
 
-// MockSegment_RLock_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RLock'
-type MockSegment_RLock_Call struct {
+// MockSegment_PinIfNotReleased_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'PinIfNotReleased'
+type MockSegment_PinIfNotReleased_Call struct {
 	*mock.Call
 }
 
-// RLock is a helper method to define mock.On call
-func (_e *MockSegment_Expecter) RLock() *MockSegment_RLock_Call {
-	return &MockSegment_RLock_Call{Call: _e.mock.On("RLock")}
+// PinIfNotReleased is a helper method to define mock.On call
+func (_e *MockSegment_Expecter) PinIfNotReleased() *MockSegment_PinIfNotReleased_Call {
+	return &MockSegment_PinIfNotReleased_Call{Call: _e.mock.On("PinIfNotReleased")}
 }
 
-func (_c *MockSegment_RLock_Call) Run(run func()) *MockSegment_RLock_Call {
+func (_c *MockSegment_PinIfNotReleased_Call) Run(run func()) *MockSegment_PinIfNotReleased_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		run()
 	})
 	return _c
 }
 
-func (_c *MockSegment_RLock_Call) Return(_a0 error) *MockSegment_RLock_Call {
+func (_c *MockSegment_PinIfNotReleased_Call) Return(_a0 error) *MockSegment_PinIfNotReleased_Call {
 	_c.Call.Return(_a0)
 	return _c
 }
 
-func (_c *MockSegment_RLock_Call) RunAndReturn(run func() error) *MockSegment_RLock_Call {
+func (_c *MockSegment_PinIfNotReleased_Call) RunAndReturn(run func() error) *MockSegment_PinIfNotReleased_Call {
 	_c.Call.Return(run)
 	return _c
 }
 
-// Unpin provides a mock function with given fields:
-func (_m *MockSegment) Unpin() {
-	_m.Called()
-}
-
-// MockSegment_RUnlock_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RUnlock'
-type MockSegment_RUnlock_Call struct {
-	*mock.Call
-}
-
-// RUnlock is a helper method to define mock.On call
-func (_e *MockSegment_Expecter) RUnlock() *MockSegment_RUnlock_Call {
-	return &MockSegment_RUnlock_Call{Call: _e.mock.On("RUnlock")}
-}
-
-func (_c *MockSegment_RUnlock_Call) Run(run func()) *MockSegment_RUnlock_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run()
-	})
-	return _c
-}
-
-func (_c *MockSegment_RUnlock_Call) Return() *MockSegment_RUnlock_Call {
-	_c.Call.Return()
-	return _c
-}
-
-func (_c *MockSegment_RUnlock_Call) RunAndReturn(run func()) *MockSegment_RUnlock_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
-// Release provides a mock function with given fields: opts
-func (_m *MockSegment) Release(opts ...releaseOption) {
+// Release provides a mock function with given fields: ctx, opts
+func (_m *MockSegment) Release(ctx context.Context, opts ...releaseOption) {
 	_va := make([]interface{}, len(opts))
 	for _i := range opts {
 		_va[_i] = opts[_i]
 	}
 	var _ca []interface{}
+	_ca = append(_ca, ctx)
 	_ca = append(_ca, _va...)
 	_m.Called(_ca...)
 }
@@ -964,21 +979,22 @@ type MockSegment_Release_Call struct {
 }
 
 // Release is a helper method to define mock.On call
+//   - ctx context.Context
 //   - opts ...releaseOption
-func (_e *MockSegment_Expecter) Release(opts ...interface{}) *MockSegment_Release_Call {
+func (_e *MockSegment_Expecter) Release(ctx interface{}, opts ...interface{}) *MockSegment_Release_Call {
 	return &MockSegment_Release_Call{Call: _e.mock.On("Release",
-		append([]interface{}{}, opts...)...)}
+		append([]interface{}{ctx}, opts...)...)}
 }
 
-func (_c *MockSegment_Release_Call) Run(run func(opts ...releaseOption)) *MockSegment_Release_Call {
+func (_c *MockSegment_Release_Call) Run(run func(ctx context.Context, opts ...releaseOption)) *MockSegment_Release_Call {
 	_c.Call.Run(func(args mock.Arguments) {
-		variadicArgs := make([]releaseOption, len(args)-0)
-		for i, a := range args[0:] {
+		variadicArgs := make([]releaseOption, len(args)-1)
+		for i, a := range args[1:] {
 			if a != nil {
 				variadicArgs[i] = a.(releaseOption)
 			}
 		}
-		run(variadicArgs...)
+		run(args[0].(context.Context), variadicArgs...)
 	})
 	return _c
 }
@@ -988,7 +1004,48 @@ func (_c *MockSegment_Release_Call) Return() *MockSegment_Release_Call {
 	return _c
 }
 
-func (_c *MockSegment_Release_Call) RunAndReturn(run func(...releaseOption)) *MockSegment_Release_Call {
+func (_c *MockSegment_Release_Call) RunAndReturn(run func(context.Context, ...releaseOption)) *MockSegment_Release_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// RemoveUnusedFieldFiles provides a mock function with given fields:
+func (_m *MockSegment) RemoveUnusedFieldFiles() error {
+	ret := _m.Called()
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func() error); ok {
+		r0 = rf()
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// MockSegment_RemoveUnusedFieldFiles_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RemoveUnusedFieldFiles'
+type MockSegment_RemoveUnusedFieldFiles_Call struct {
+	*mock.Call
+}
+
+// RemoveUnusedFieldFiles is a helper method to define mock.On call
+func (_e *MockSegment_Expecter) RemoveUnusedFieldFiles() *MockSegment_RemoveUnusedFieldFiles_Call {
+	return &MockSegment_RemoveUnusedFieldFiles_Call{Call: _e.mock.On("RemoveUnusedFieldFiles")}
+}
+
+func (_c *MockSegment_RemoveUnusedFieldFiles_Call) Run(run func()) *MockSegment_RemoveUnusedFieldFiles_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockSegment_RemoveUnusedFieldFiles_Call) Return(_a0 error) *MockSegment_RemoveUnusedFieldFiles_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockSegment_RemoveUnusedFieldFiles_Call) RunAndReturn(run func() error) *MockSegment_RemoveUnusedFieldFiles_Call {
 	_c.Call.Return(run)
 	return _c
 }
@@ -1316,14 +1373,14 @@ func (_c *MockSegment_Search_Call) RunAndReturn(run func(context.Context, *Searc
 }
 
 // Shard provides a mock function with given fields:
-func (_m *MockSegment) Shard() string {
+func (_m *MockSegment) Shard() metautil.Channel {
 	ret := _m.Called()
 
-	var r0 string
-	if rf, ok := ret.Get(0).(func() string); ok {
+	var r0 metautil.Channel
+	if rf, ok := ret.Get(0).(func() metautil.Channel); ok {
 		r0 = rf()
 	} else {
-		r0 = ret.Get(0).(string)
+		r0 = ret.Get(0).(metautil.Channel)
 	}
 
 	return r0
@@ -1346,12 +1403,12 @@ func (_c *MockSegment_Shard_Call) Run(run func()) *MockSegment_Shard_Call {
 	return _c
 }
 
-func (_c *MockSegment_Shard_Call) Return(_a0 string) *MockSegment_Shard_Call {
+func (_c *MockSegment_Shard_Call) Return(_a0 metautil.Channel) *MockSegment_Shard_Call {
 	_c.Call.Return(_a0)
 	return _c
 }
 
-func (_c *MockSegment_Shard_Call) RunAndReturn(run func() string) *MockSegment_Shard_Call {
+func (_c *MockSegment_Shard_Call) RunAndReturn(run func() metautil.Channel) *MockSegment_Shard_Call {
 	_c.Call.Return(run)
 	return _c
 }
@@ -1436,6 +1493,38 @@ func (_c *MockSegment_Type_Call) Return(_a0 commonpb.SegmentState) *MockSegment_
 }
 
 func (_c *MockSegment_Type_Call) RunAndReturn(run func() commonpb.SegmentState) *MockSegment_Type_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// Unpin provides a mock function with given fields:
+func (_m *MockSegment) Unpin() {
+	_m.Called()
+}
+
+// MockSegment_Unpin_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Unpin'
+type MockSegment_Unpin_Call struct {
+	*mock.Call
+}
+
+// Unpin is a helper method to define mock.On call
+func (_e *MockSegment_Expecter) Unpin() *MockSegment_Unpin_Call {
+	return &MockSegment_Unpin_Call{Call: _e.mock.On("Unpin")}
+}
+
+func (_c *MockSegment_Unpin_Call) Run(run func()) *MockSegment_Unpin_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockSegment_Unpin_Call) Return() *MockSegment_Unpin_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockSegment_Unpin_Call) RunAndReturn(run func()) *MockSegment_Unpin_Call {
 	_c.Call.Return(run)
 	return _c
 }

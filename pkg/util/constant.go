@@ -56,6 +56,7 @@ const (
 	DefaultDBName       = "default"
 	DefaultDBID         = int64(1)
 	NonDBID             = int64(0)
+	InvalidDBID         = int64(-1)
 
 	PrivilegeWord = "Privilege"
 	AnyWord       = "*"
@@ -70,6 +71,8 @@ const (
 	RoleConfigObjectName = "object_name"
 	RoleConfigDBName     = "db_name"
 	RoleConfigPrivilege  = "privilege"
+
+	MaxEtcdTxnNum = 128
 )
 
 const (
@@ -135,6 +138,8 @@ var (
 			MetaStore2API(commonpb.ObjectPrivilege_PrivilegeCreateDatabase.String()),
 			MetaStore2API(commonpb.ObjectPrivilege_PrivilegeDropDatabase.String()),
 			MetaStore2API(commonpb.ObjectPrivilege_PrivilegeListDatabases.String()),
+			MetaStore2API(commonpb.ObjectPrivilege_PrivilegeAlterDatabase.String()),
+			MetaStore2API(commonpb.ObjectPrivilege_PrivilegeDescribeDatabase.String()),
 
 			MetaStore2API(commonpb.ObjectPrivilege_PrivilegeCreateAlias.String()),
 			MetaStore2API(commonpb.ObjectPrivilege_PrivilegeDropAlias.String()),

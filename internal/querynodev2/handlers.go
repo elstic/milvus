@@ -163,6 +163,12 @@ func (node *QueryNode) loadIndex(ctx context.Context, req *querypb.LoadSegmentsR
 			continue
 		}
 
+		if localSegment.IsLazyLoad() {
+			localSegment.SetLoadInfo(info)
+			localSegment.SetNeedUpdatedVersion(req.GetVersion())
+			node.manager.DiskCache.MarkItemNeedReload(ctx, localSegment.ID())
+			return nil
+		}
 		err := node.loader.LoadIndex(ctx, localSegment, info, req.Version)
 		if err != nil {
 			log.Warn("failed to load index", zap.Error(err))
@@ -311,7 +317,7 @@ func (node *QueryNode) queryStreamSegments(ctx context.Context, req *querypb.Que
 	}
 
 	// Send task to scheduler and wait until it finished.
-	task := tasks.NewQueryStreamTask(ctx, collection, node.manager, req, srv)
+	task := tasks.NewQueryStreamTask(ctx, collection, node.manager, req, srv, node.streamBatchSzie)
 	if err := node.scheduler.Add(task); err != nil {
 		log.Warn("failed to add query task into scheduler", zap.Error(err))
 		return err
@@ -425,11 +431,11 @@ func (node *QueryNode) getChannelStatistics(ctx context.Context, req *querypb.Ge
 			results, readSegments, err = segments.StatisticStreaming(ctx, node.manager, req.Req.GetCollectionID(), req.Req.GetPartitionIDs(), req.GetSegmentIDs())
 		}
 
+		defer node.manager.Segment.Unpin(readSegments)
 		if err != nil {
 			log.Warn("get segments statistics failed", zap.Error(err))
 			return nil, err
 		}
-		defer node.manager.Segment.Unpin(readSegments)
 		return segmentStatsResponse(results), nil
 	}
 

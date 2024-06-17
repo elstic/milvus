@@ -12,7 +12,8 @@ allure-pytest==2.7.0
 pytest-print==0.2.1
 pytest-level==0.1.1
 pytest-xdist==2.5.0
-pymilvus==2.5.0rc18
+pymilvus==2.5.0rc31
+pymilvus[bulk_writer]==2.5.0rc31
 pytest-rerunfailures==9.1.1
 git+https://github.com/Projectplace/pytest-tags
 ndg-httpsclient
@@ -45,6 +46,7 @@ loguru==0.7.0
 psutil==5.9.4
 pandas==1.5.3
 tenacity==8.1.0
+rich==13.7.0
 # for standby test
 etcd-sdk-python==0.0.4
 deepdiff==6.7.1
@@ -55,7 +57,5 @@ pyarrow==14.0.1
 fastparquet==2023.7.0
 
 # for bf16 datatype
-jax==0.4.13
-jaxlib==0.4.13
-tensorflow==2.13.1
+ml-dtypes==0.2.0
 

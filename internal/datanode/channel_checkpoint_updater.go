@@ -25,6 +25,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
+	"github.com/milvus-io/milvus/internal/datanode/broker"
 	"github.com/milvus-io/milvus/pkg/log"
 	"github.com/milvus-io/milvus/pkg/util/paramtable"
 	"github.com/milvus-io/milvus/pkg/util/typeutil"
@@ -37,11 +38,11 @@ const (
 type channelCPUpdateTask struct {
 	pos      *msgpb.MsgPosition
 	callback func()
-	flush    bool
+	flush    bool // indicates whether the task originates from flush
 }
 
 type channelCheckpointUpdater struct {
-	dn *DataNode
+	broker broker.Broker
 
 	mu         sync.RWMutex
 	tasks      map[string]*channelCPUpdateTask
@@ -51,9 +52,9 @@ type channelCheckpointUpdater struct {
 	closeOnce sync.Once
 }
 
-func newChannelCheckpointUpdater(dn *DataNode) *channelCheckpointUpdater {
+func newChannelCheckpointUpdater(broker broker.Broker) *channelCheckpointUpdater {
 	return &channelCheckpointUpdater{
-		dn:         dn,
+		broker:     broker,
 		tasks:      make(map[string]*channelCPUpdateTask),
 		closeCh:    make(chan struct{}),
 		notifyChan: make(chan struct{}, 1),
@@ -74,6 +75,7 @@ func (ccu *channelCheckpointUpdater) start() {
 			ccu.mu.Lock()
 			for _, task := range ccu.tasks {
 				if task.flush {
+					// reset flush flag to make next flush valid
 					task.flush = false
 					tasks = append(tasks, task)
 				}
@@ -124,7 +126,7 @@ func (ccu *channelCheckpointUpdater) updateCheckpoints(tasks []*channelCPUpdateT
 				channelCPs := lo.Map(tasks, func(t *channelCPUpdateTask, _ int) *msgpb.MsgPosition {
 					return t.pos
 				})
-				err := ccu.dn.broker.UpdateChannelCheckpoint(ctx, channelCPs)
+				err := ccu.broker.UpdateChannelCheckpoint(ctx, channelCPs)
 				if err != nil {
 					log.Warn("update channel checkpoint failed", zap.Error(err))
 					return
@@ -142,6 +144,7 @@ func (ccu *channelCheckpointUpdater) updateCheckpoints(tasks []*channelCPUpdateT
 	defer ccu.mu.Unlock()
 	finished.Range(func(_ string, task *channelCPUpdateTask) bool {
 		channel := task.pos.GetChannelName()
+		// delete the task if no new task has been added
 		if ccu.tasks[channel].pos.GetTimestamp() <= task.pos.GetTimestamp() {
 			delete(ccu.tasks, channel)
 		}
@@ -163,6 +166,7 @@ func (ccu *channelCheckpointUpdater) AddTask(channelPos *msgpb.MsgPosition, flus
 		return
 	}
 	if flush {
+		// trigger update to accelerate flush
 		defer ccu.trigger()
 	}
 	channel := channelPos.GetChannelName()
@@ -184,6 +188,8 @@ func (ccu *channelCheckpointUpdater) AddTask(channelPos *msgpb.MsgPosition, flus
 		}
 		return b
 	}
+	// 1. `task.pos.GetTimestamp() < channelPos.GetTimestamp()`: position updated, update task position
+	// 2. `flush && !task.flush`: position not being updated, but flush is triggered, update task flush flag
 	if task.pos.GetTimestamp() < channelPos.GetTimestamp() || (flush && !task.flush) {
 		ccu.mu.Lock()
 		defer ccu.mu.Unlock()

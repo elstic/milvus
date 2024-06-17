@@ -196,14 +196,14 @@ TEST(Float16, GetVector) {
 
         auto vector = result.get()->mutable_vectors()->float16_vector();
         EXPECT_TRUE(vector.size() == num_inserted * dim * sizeof(float16));
-        // EXPECT_TRUE(vector.size() == num_inserted * dim);
-        // for (size_t i = 0; i < num_inserted; ++i) {
-        //     auto id = ids_ds->GetIds()[i];
-        //     for (size_t j = 0; j < 128; ++j) {
-        //         EXPECT_TRUE(vector[i * dim + j] ==
-        //                     fakevec[(id % per_batch) * dim + j]);
-        //     }
-        // }
+        for (size_t i = 0; i < num_inserted; ++i) {
+            auto id = ids_ds->GetIds()[i];
+            for (size_t j = 0; j < 128; ++j) {
+                EXPECT_TRUE(
+                    reinterpret_cast<float16*>(vector.data())[i * dim + j] ==
+                    fakevec[(id % per_batch) * dim + j]);
+            }
+        }
     }
 }
 
@@ -240,8 +240,8 @@ TEST(Float16, RetrieveEmpty) {
     std::vector<FieldId> target_offsets{fid_64, fid_vec};
     plan->field_ids_ = target_offsets;
 
-    auto retrieve_results =
-        segment->Retrieve(plan.get(), 100, DEFAULT_MAX_OUTPUT_SIZE);
+    auto retrieve_results = segment->Retrieve(
+        nullptr, plan.get(), 100, DEFAULT_MAX_OUTPUT_SIZE, false);
 
     Assert(retrieve_results->fields_data_size() == target_offsets.size());
     auto field0 = retrieve_results->fields_data(0);
@@ -453,14 +453,14 @@ TEST(BFloat16, GetVector) {
 
         auto vector = result.get()->mutable_vectors()->bfloat16_vector();
         EXPECT_TRUE(vector.size() == num_inserted * dim * sizeof(bfloat16));
-        // EXPECT_TRUE(vector.size() == num_inserted * dim);
-        // for (size_t i = 0; i < num_inserted; ++i) {
-        //     auto id = ids_ds->GetIds()[i];
-        //     for (size_t j = 0; j < 128; ++j) {
-        //         EXPECT_TRUE(vector[i * dim + j] ==
-        //                     fakevec[(id % per_batch) * dim + j]);
-        //     }
-        // }
+        for (size_t i = 0; i < num_inserted; ++i) {
+            auto id = ids_ds->GetIds()[i];
+            for (size_t j = 0; j < 128; ++j) {
+                EXPECT_TRUE(
+                    reinterpret_cast<bfloat16*>(vector.data())[i * dim + j] ==
+                    fakevec[(id % per_batch) * dim + j]);
+            }
+        }
     }
 }
 
@@ -493,8 +493,8 @@ TEST(BFloat16, RetrieveEmpty) {
     std::vector<FieldId> target_offsets{fid_64, fid_vec};
     plan->field_ids_ = target_offsets;
 
-    auto retrieve_results =
-        segment->Retrieve(plan.get(), 100, DEFAULT_MAX_OUTPUT_SIZE);
+    auto retrieve_results = segment->Retrieve(
+        nullptr, plan.get(), 100, DEFAULT_MAX_OUTPUT_SIZE, false);
 
     Assert(retrieve_results->fields_data_size() == target_offsets.size());
     auto field0 = retrieve_results->fields_data(0);

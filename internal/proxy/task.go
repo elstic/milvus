@@ -32,7 +32,6 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/pkg/common"
 	"github.com/milvus-io/milvus/pkg/log"
@@ -88,10 +87,11 @@ const (
 	ListResourceGroupsTaskName    = "ListResourceGroupsTask"
 	DescribeResourceGroupTaskName = "DescribeResourceGroupTask"
 
-	CreateDatabaseTaskName = "CreateCollectionTask"
-	DropDatabaseTaskName   = "DropDatabaseTaskName"
-	ListDatabaseTaskName   = "ListDatabaseTaskName"
-	AlterDatabaseTaskName  = "AlterDatabaseTaskName"
+	CreateDatabaseTaskName   = "CreateCollectionTask"
+	DropDatabaseTaskName     = "DropDatabaseTaskName"
+	ListDatabaseTaskName     = "ListDatabaseTaskName"
+	AlterDatabaseTaskName    = "AlterDatabaseTaskName"
+	DescribeDatabaseTaskName = "DescribeDatabaseTaskName"
 
 	// minFloat32 minimum float.
 	minFloat32 = -1 * float32(math.MaxFloat32)
@@ -206,9 +206,19 @@ func (t *createCollectionTask) validatePartitionKey() error {
 				return errors.New("the specified partitions should be greater than 0 if partition key is used")
 			}
 
+			maxPartitionNum := Params.RootCoordCfg.MaxPartitionNum.GetAsInt64()
+			if t.GetNumPartitions() > maxPartitionNum {
+				return merr.WrapErrParameterInvalidMsg("partition number (%d) exceeds max configuration (%d)",
+					t.GetNumPartitions(), maxPartitionNum)
+			}
+
 			// set default physical partitions num if enable partition key mode
 			if t.GetNumPartitions() == 0 {
-				t.NumPartitions = common.DefaultPartitionsWithPartitionKey
+				defaultNum := common.DefaultPartitionsWithPartitionKey
+				if defaultNum > maxPartitionNum {
+					defaultNum = maxPartitionNum
+				}
+				t.NumPartitions = defaultNum
 			}
 
 			idx = i
@@ -242,16 +252,6 @@ func (t *createCollectionTask) validateClusteringKey() error {
 				return merr.WrapErrCollectionIllegalSchema(t.CollectionName,
 					fmt.Sprintf("there are more than one clustering key, field name = %s, %s", t.schema.Fields[idx].Name, field.Name))
 			}
-
-			if field.GetIsPrimaryKey() {
-				return merr.WrapErrCollectionIllegalSchema(t.CollectionName,
-					fmt.Sprintf("the clustering key field must not be primary key field, field name = %s", field.Name))
-			}
-
-			if field.GetIsPartitionKey() {
-				return merr.WrapErrCollectionIllegalSchema(t.CollectionName,
-					fmt.Sprintf("the clustering key field must not be partition key field, field name = %s", field.Name))
-			}
 			idx = i
 		}
 	}
@@ -283,8 +283,13 @@ func (t *createCollectionTask) PreExecute(ctx context.Context) error {
 		return fmt.Errorf("maximum field's number should be limited to %d", Params.ProxyCfg.MaxFieldNum.GetAsInt())
 	}
 
-	if len(typeutil.GetVectorFieldSchemas(t.schema)) > Params.ProxyCfg.MaxVectorFieldNum.GetAsInt() {
+	vectorFields := len(typeutil.GetVectorFieldSchemas(t.schema))
+	if vectorFields > Params.ProxyCfg.MaxVectorFieldNum.GetAsInt() {
 		return fmt.Errorf("maximum vector field's number should be limited to %d", Params.ProxyCfg.MaxVectorFieldNum.GetAsInt())
+	}
+
+	if vectorFields == 0 {
+		return merr.WrapErrParameterInvalidMsg("schema does not contain vector field")
 	}
 
 	// validate collection name
@@ -651,6 +656,7 @@ func (t *describeCollectionTask) Execute(ctx context.Context) error {
 				IsClusteringKey: field.IsClusteringKey,
 				DefaultValue:    field.DefaultValue,
 				ElementType:     field.ElementType,
+				Nullable:        field.Nullable,
 			})
 		}
 	}
@@ -1531,11 +1537,6 @@ func (t *loadCollectionTask) PreExecute(ctx context.Context) error {
 
 	if err := validateCollectionName(collName); err != nil {
 		return err
-	}
-
-	// To compat with LoadCollcetion before Milvus@2.1
-	if t.ReplicaNumber == 0 {
-		t.ReplicaNumber = 1
 	}
 
 	return nil
@@ -2500,77 +2501,5 @@ func (t *ListResourceGroupsTask) Execute(ctx context.Context) error {
 }
 
 func (t *ListResourceGroupsTask) PostExecute(ctx context.Context) error {
-	return nil
-}
-
-type alterDatabaseTask struct {
-	baseTask
-	Condition
-	*milvuspb.AlterDatabaseRequest
-	ctx       context.Context
-	rootCoord types.RootCoordClient
-	result    *commonpb.Status
-}
-
-func (t *alterDatabaseTask) TraceCtx() context.Context {
-	return t.ctx
-}
-
-func (t *alterDatabaseTask) ID() UniqueID {
-	return t.Base.MsgID
-}
-
-func (t *alterDatabaseTask) SetID(uid UniqueID) {
-	t.Base.MsgID = uid
-}
-
-func (t *alterDatabaseTask) Name() string {
-	return AlterDatabaseTaskName
-}
-
-func (t *alterDatabaseTask) Type() commonpb.MsgType {
-	return t.Base.MsgType
-}
-
-func (t *alterDatabaseTask) BeginTs() Timestamp {
-	return t.Base.Timestamp
-}
-
-func (t *alterDatabaseTask) EndTs() Timestamp {
-	return t.Base.Timestamp
-}
-
-func (t *alterDatabaseTask) SetTs(ts Timestamp) {
-	t.Base.Timestamp = ts
-}
-
-func (t *alterDatabaseTask) OnEnqueue() error {
-	if t.Base == nil {
-		t.Base = commonpbutil.NewMsgBase()
-	}
-	return nil
-}
-
-func (t *alterDatabaseTask) PreExecute(ctx context.Context) error {
-	t.Base.MsgType = commonpb.MsgType_AlterCollection
-	t.Base.SourceID = paramtable.GetNodeID()
-
-	return nil
-}
-
-func (t *alterDatabaseTask) Execute(ctx context.Context) error {
-	var err error
-
-	req := &rootcoordpb.AlterDatabaseRequest{
-		Base:       t.AlterDatabaseRequest.GetBase(),
-		DbName:     t.AlterDatabaseRequest.GetDbName(),
-		DbId:       t.AlterDatabaseRequest.GetDbId(),
-		Properties: t.AlterDatabaseRequest.GetProperties(),
-	}
-	t.result, err = t.rootCoord.AlterDatabase(ctx, req)
-	return err
-}
-
-func (t *alterDatabaseTask) PostExecute(ctx context.Context) error {
 	return nil
 }

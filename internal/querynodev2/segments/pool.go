@@ -37,12 +37,17 @@ var (
 	// and other operations (insert/delete/statistics/etc.)
 	// since in concurrent situation, there operation may block each other in high payload
 
-	sqp      atomic.Pointer[conc.Pool[any]]
-	sqOnce   sync.Once
-	dp       atomic.Pointer[conc.Pool[any]]
-	dynOnce  sync.Once
-	loadPool atomic.Pointer[conc.Pool[any]]
-	loadOnce sync.Once
+	sqp        atomic.Pointer[conc.Pool[any]]
+	sqOnce     sync.Once
+	dp         atomic.Pointer[conc.Pool[any]]
+	dynOnce    sync.Once
+	loadPool   atomic.Pointer[conc.Pool[any]]
+	loadOnce   sync.Once
+	warmupPool atomic.Pointer[conc.Pool[any]]
+	warmupOnce sync.Once
+
+	bfPool      atomic.Pointer[conc.Pool[any]]
+	bfApplyOnce sync.Once
 )
 
 // initSQPool initialize
@@ -60,6 +65,7 @@ func initSQPool() {
 
 		pt.Watch(pt.QueryNodeCfg.MaxReadConcurrency.Key, config.NewHandler("qn.sqpool.maxconc", ResizeSQPool))
 		pt.Watch(pt.QueryNodeCfg.CGOPoolSizeRatio.Key, config.NewHandler("qn.sqpool.cgopoolratio", ResizeSQPool))
+		log.Info("init SQPool done", zap.Int("size", initPoolSize))
 	})
 }
 
@@ -73,6 +79,7 @@ func initDynamicPool() {
 		)
 
 		dp.Store(pool)
+		log.Info("init dynamicPool done", zap.Int("size", hardware.GetCPUNum()))
 	})
 }
 
@@ -80,9 +87,6 @@ func initLoadPool() {
 	loadOnce.Do(func() {
 		pt := paramtable.Get()
 		poolSize := hardware.GetCPUNum() * pt.CommonCfg.MiddlePriorityThreadCoreCoefficient.GetAsInt()
-		if poolSize > 16 {
-			poolSize = 16
-		}
 		pool := conc.NewPool[any](
 			poolSize,
 			conc.WithPreAlloc(false),
@@ -93,6 +97,37 @@ func initLoadPool() {
 		loadPool.Store(pool)
 
 		pt.Watch(pt.CommonCfg.MiddlePriorityThreadCoreCoefficient.Key, config.NewHandler("qn.loadpool.middlepriority", ResizeLoadPool))
+		log.Info("init loadPool done", zap.Int("size", poolSize))
+	})
+}
+
+func initWarmupPool() {
+	warmupOnce.Do(func() {
+		pt := paramtable.Get()
+		poolSize := hardware.GetCPUNum() * pt.CommonCfg.LowPriorityThreadCoreCoefficient.GetAsInt()
+		pool := conc.NewPool[any](
+			poolSize,
+			conc.WithPreAlloc(false),
+			conc.WithDisablePurge(false),
+			conc.WithPreHandler(runtime.LockOSThread), // lock os thread for cgo thread disposal
+			conc.WithNonBlocking(true),                // make warming up non blocking
+		)
+
+		warmupPool.Store(pool)
+		pt.Watch(pt.CommonCfg.LowPriorityThreadCoreCoefficient.Key, config.NewHandler("qn.warmpool.lowpriority", ResizeWarmupPool))
+	})
+}
+
+func initBFApplyPool() {
+	bfApplyOnce.Do(func() {
+		pt := paramtable.Get()
+		poolSize := hardware.GetCPUNum() * pt.QueryNodeCfg.BloomFilterApplyParallelFactor.GetAsInt()
+		pool := conc.NewPool[any](
+			poolSize,
+		)
+
+		bfPool.Store(pool)
+		pt.Watch(pt.QueryNodeCfg.BloomFilterApplyParallelFactor.Key, config.NewHandler("qn.bfapply.parallel", ResizeBFApplyPool))
 	})
 }
 
@@ -113,6 +148,16 @@ func GetLoadPool() *conc.Pool[any] {
 	return loadPool.Load()
 }
 
+func GetWarmupPool() *conc.Pool[any] {
+	initWarmupPool()
+	return warmupPool.Load()
+}
+
+func GetBFApplyPool() *conc.Pool[any] {
+	initBFApplyPool()
+	return bfPool.Load()
+}
+
 func ResizeSQPool(evt *config.Event) {
 	if evt.HasUpdated {
 		pt := paramtable.Get()
@@ -128,6 +173,22 @@ func ResizeLoadPool(evt *config.Event) {
 		pt := paramtable.Get()
 		newSize := hardware.GetCPUNum() * pt.CommonCfg.MiddlePriorityThreadCoreCoefficient.GetAsInt()
 		resizePool(GetLoadPool(), newSize, "LoadPool")
+	}
+}
+
+func ResizeWarmupPool(evt *config.Event) {
+	if evt.HasUpdated {
+		pt := paramtable.Get()
+		newSize := hardware.GetCPUNum() * pt.CommonCfg.LowPriorityThreadCoreCoefficient.GetAsInt()
+		resizePool(GetWarmupPool(), newSize, "WarmupPool")
+	}
+}
+
+func ResizeBFApplyPool(evt *config.Event) {
+	if evt.HasUpdated {
+		pt := paramtable.Get()
+		newSize := hardware.GetCPUNum() * pt.QueryNodeCfg.BloomFilterApplyParallelFactor.GetAsInt()
+		resizePool(GetBFApplyPool(), newSize, "BFApplyPool")
 	}
 }
 

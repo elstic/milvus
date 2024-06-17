@@ -28,6 +28,7 @@ import (
 	"github.com/milvus-io/milvus/internal/datacoord/broker"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus/internal/util/importutilv2"
 	"github.com/milvus-io/milvus/pkg/log"
 	"github.com/milvus-io/milvus/pkg/metrics"
 	"github.com/milvus-io/milvus/pkg/util/tsoutil"
@@ -253,7 +254,7 @@ func (c *importChecker) checkImportingJob(job ImportJob) {
 
 	// Verify completion of index building for imported segments.
 	unindexed := c.meta.indexMeta.GetUnindexedSegments(job.GetCollectionID(), segmentIDs)
-	if Params.DataCoordCfg.WaitForIndex.GetAsBool() && len(unindexed) > 0 {
+	if Params.DataCoordCfg.WaitForIndex.GetAsBool() && len(unindexed) > 0 && !importutilv2.IsL0Import(job.GetOptions()) {
 		log.Debug("waiting for import segments building index...", zap.Int64s("unindexed", unindexed))
 		return
 	}
@@ -341,6 +342,9 @@ func (c *importChecker) checkCollection(collectionID int64, jobs []ImportJob) {
 		return
 	}
 	if !has {
+		jobs = lo.Filter(jobs, func(job ImportJob, _ int) bool {
+			return job.GetState() != internalpb.ImportJobState_Failed
+		})
 		for _, job := range jobs {
 			err = c.imeta.UpdateJob(job.GetJobID(), UpdateJobState(internalpb.ImportJobState_Failed),
 				UpdateJobReason(fmt.Sprintf("collection %d dropped", collectionID)))
@@ -356,9 +360,9 @@ func (c *importChecker) checkGC(job ImportJob) {
 		job.GetState() != internalpb.ImportJobState_Failed {
 		return
 	}
-	GCRetention := Params.DataCoordCfg.ImportTaskRetention.GetAsDuration(time.Second)
 	cleanupTime := tsoutil.PhysicalTime(job.GetCleanupTs())
-	if time.Since(cleanupTime) >= GCRetention {
+	if time.Now().After(cleanupTime) {
+		GCRetention := Params.DataCoordCfg.ImportTaskRetention.GetAsDuration(time.Second)
 		log.Info("job has reached the GC retention", zap.Int64("jobID", job.GetJobID()),
 			zap.Time("cleanupTime", cleanupTime), zap.Duration("GCRetention", GCRetention))
 		tasks := c.imeta.GetTaskBy(WithJob(job.GetJobID()))
@@ -388,6 +392,8 @@ func (c *importChecker) checkGC(job ImportJob) {
 		err := c.imeta.RemoveJob(job.GetJobID())
 		if err != nil {
 			log.Warn("remove import job failed", zap.Int64("jobID", job.GetJobID()), zap.Error(err))
+			return
 		}
+		log.Info("import job removed", zap.Int64("jobID", job.GetJobID()))
 	}
 }

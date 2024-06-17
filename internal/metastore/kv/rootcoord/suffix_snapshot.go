@@ -33,7 +33,9 @@ import (
 	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/pkg/common"
 	"github.com/milvus-io/milvus/pkg/log"
+	"github.com/milvus-io/milvus/pkg/util"
 	"github.com/milvus-io/milvus/pkg/util/etcd"
+	"github.com/milvus-io/milvus/pkg/util/merr"
 	"github.com/milvus-io/milvus/pkg/util/retry"
 	"github.com/milvus-io/milvus/pkg/util/tsoutil"
 	"github.com/milvus-io/milvus/pkg/util/typeutil"
@@ -501,6 +503,53 @@ func (ss *SuffixSnapshot) LoadWithPrefix(key string, ts typeutil.Timestamp) ([]s
 	return resultKeys, resultValues, nil
 }
 
+// MultiSaveAndRemove save muiltple kvs and remove as well
+// if ts == 0, act like MetaKv
+// each key-value will be treated in same logic like Save
+func (ss *SuffixSnapshot) MultiSaveAndRemove(saves map[string]string, removals []string, ts typeutil.Timestamp) error {
+	// if ts == 0, act like MetaKv
+	if ts == 0 {
+		return ss.MetaKv.MultiSaveAndRemove(saves, removals)
+	}
+	ss.Lock()
+	defer ss.Unlock()
+	var err error
+
+	// process each key, checks whether is the latest
+	execute, updateList, err := ss.generateSaveExecute(saves, ts)
+	if err != nil {
+		return err
+	}
+
+	// load each removal, change execution to adding tombstones
+	for _, removal := range removals {
+		value, err := ss.MetaKv.Load(removal)
+		if err != nil {
+			log.Warn("SuffixSnapshot MetaKv Load failed", zap.String("key", removal), zap.Error(err))
+			if errors.Is(err, merr.ErrIoKeyNotFound) {
+				continue
+			}
+			return err
+		}
+		// add tombstone to original key and add ts entry
+		if IsTombstone(value) {
+			continue
+		}
+		execute[removal] = string(SuffixSnapshotTombstone)
+		execute[ss.composeTSKey(removal, ts)] = string(SuffixSnapshotTombstone)
+		updateList = append(updateList, removal)
+	}
+
+	// multi save execute map; if succeeds, update ts in the update list
+	err = ss.MetaKv.MultiSave(execute)
+	if err == nil {
+		for _, key := range updateList {
+			ss.lastestTS[key] = ts
+		}
+	}
+	return err
+}
+
 // MultiSaveAndRemoveWithPrefix save muiltple kvs and remove as well
 // if ts == 0, act like MetaKv
 // each key-value will be treated in same logic like Save
@@ -521,14 +570,17 @@ func (ss *SuffixSnapshot) MultiSaveAndRemoveWithPrefix(saves map[string]string, 
 
 	// load each removal, change execution to adding tombstones
 	for _, removal := range removals {
-		keys, _, err := ss.MetaKv.LoadWithPrefix(removal)
+		keys, values, err := ss.MetaKv.LoadWithPrefix(removal)
 		if err != nil {
 			log.Warn("SuffixSnapshot MetaKv LoadwithPrefix failed", zap.String("key", removal), zap.Error(err))
 			return err
 		}
 
 		// add tombstone to original key and add ts entry
-		for _, key := range keys {
+		for idx, key := range keys {
+			if IsTombstone(values[idx]) {
+				continue
+			}
 			key = ss.hideRootPrefix(key)
 			execute[key] = string(SuffixSnapshotTombstone)
 			execute[ss.composeTSKey(key, ts)] = string(SuffixSnapshotTombstone)
@@ -593,7 +645,7 @@ func (ss *SuffixSnapshot) batchRemoveExpiredKvs(keyGroup []string, originalKey s
 	removeFn := func(partialKeys []string) error {
 		return ss.MetaKv.MultiRemove(keyGroup)
 	}
-	return etcd.RemoveByBatch(keyGroup, removeFn)
+	return etcd.RemoveByBatchWithLimit(keyGroup, util.MaxEtcdTxnNum, removeFn)
 }
 
 func (ss *SuffixSnapshot) removeExpiredKvs(now time.Time) error {

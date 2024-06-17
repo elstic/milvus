@@ -32,7 +32,7 @@ func (buf *segmentBuffer) IsFull() bool {
 	return buf.insertBuffer.IsFull() || buf.deltaBuffer.IsFull()
 }
 
-func (buf *segmentBuffer) Yield() (insert *storage.InsertData, delete *storage.DeleteData) {
+func (buf *segmentBuffer) Yield() (insert []*storage.InsertData, delete *storage.DeleteData) {
 	return buf.insertBuffer.Yield(), buf.deltaBuffer.Yield()
 }
 
@@ -74,6 +74,21 @@ func (buf *segmentBuffer) MemorySize() int64 {
 type TimeRange struct {
 	timestampMin typeutil.Timestamp
 	timestampMax typeutil.Timestamp
+}
+
+func NewTimeRange(min, max typeutil.Timestamp) *TimeRange {
+	return &TimeRange{
+		timestampMin: min,
+		timestampMax: max,
+	}
+}
+
+func (tr *TimeRange) GetMinTimestamp() typeutil.Timestamp {
+	return tr.timestampMin
+}
+
+func (tr *TimeRange) GetMaxTimestamp() typeutil.Timestamp {
+	return tr.timestampMax
 }
 
 func (tr *TimeRange) Merge(other *TimeRange) {

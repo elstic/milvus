@@ -64,6 +64,9 @@ class StringIndexMarisa : public StringIndex {
     Build(const Config& config = {}) override;
 
     void
+    BuildWithFieldData(const std::vector<FieldDataPtr>& field_datas) override;
+
+    void
     BuildV2(const Config& Config = {}) override;
 
     const TargetBitmap
@@ -113,7 +116,8 @@ class StringIndexMarisa : public StringIndex {
     prefix_match(const std::string_view prefix);
 
     void
-    LoadWithoutAssemble(const BinarySet& binary_set, const Config& config);
+    LoadWithoutAssemble(const BinarySet& binary_set,
+                        const Config& config) override;
 
  private:
     Config config_;

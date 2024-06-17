@@ -23,7 +23,6 @@ import (
 
 	"github.com/cockroachdb/errors"
 	"github.com/samber/lo"
-	"go.uber.org/multierr"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
@@ -31,7 +30,6 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"github.com/milvus-io/milvus/internal/querycoordv2/checkers"
 	"github.com/milvus-io/milvus/internal/querycoordv2/job"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
@@ -217,6 +215,24 @@ func (s *Server) LoadCollection(ctx context.Context, req *querypb.LoadCollection
 		return merr.Status(err), nil
 	}
 
+	if req.GetReplicaNumber() <= 0 || len(req.GetResourceGroups()) == 0 {
+		// when replica number or resource groups is not set, use database level config
+		rgs, replicas, err := s.broker.GetCollectionLoadInfo(ctx, req.GetCollectionID())
+		if err != nil {
+			log.Warn("failed to get data base level load info", zap.Error(err))
+		}
+
+		if req.GetReplicaNumber() <= 0 {
+			log.Info("load collection use database level replica number", zap.Int64("databaseLevelReplicaNum", replicas))
+			req.ReplicaNumber = int32(replicas)
+		}
+
+		if len(req.GetResourceGroups()) == 0 {
+			log.Info("load collection use database level resource groups", zap.Strings("databaseLevelResourceGroups", rgs))
+			req.ResourceGroups = rgs
+		}
+	}
+
 	if err := s.checkResourceGroup(req.GetCollectionID(), req.GetResourceGroups()); err != nil {
 		msg := "failed to load collection"
 		log.Warn(msg, zap.Error(err))
@@ -316,6 +332,24 @@ func (s *Server) LoadPartitions(ctx context.Context, req *querypb.LoadPartitions
 			log.Warn("failed to refresh partitions", zap.Error(err))
 		}
 		return merr.Status(err), nil
+	}
+
+	if req.GetReplicaNumber() <= 0 || len(req.GetResourceGroups()) == 0 {
+		// when replica number or resource groups is not set, use database level config
+		rgs, replicas, err := s.broker.GetCollectionLoadInfo(ctx, req.GetCollectionID())
+		if err != nil {
+			log.Warn("failed to get data base level load info", zap.Error(err))
+		}
+
+		if req.GetReplicaNumber() <= 0 {
+			log.Info("load collection use database level replica number", zap.Int64("databaseLevelReplicaNum", replicas))
+			req.ReplicaNumber = int32(replicas)
+		}
+
+		if len(req.GetResourceGroups()) == 0 {
+			log.Info("load collection use database level resource groups", zap.Strings("databaseLevelResourceGroups", rgs))
+			req.ResourceGroups = rgs
+		}
 	}
 
 	if err := s.checkResourceGroup(req.GetCollectionID(), req.GetResourceGroups()); err != nil {
@@ -688,7 +722,7 @@ func (s *Server) LoadBalance(ctx context.Context, req *querypb.LoadBalanceReques
 	// when no dst node specified, default to use all other nodes in same
 	dstNodeSet := typeutil.NewUniqueSet()
 	if len(req.GetDstNodeIDs()) == 0 {
-		dstNodeSet.Insert(replica.GetNodes()...)
+		dstNodeSet.Insert(replica.GetRWNodes()...)
 	} else {
 		for _, dstNode := range req.GetDstNodeIDs() {
 			if !replica.Contains(dstNode) {
@@ -867,99 +901,11 @@ func (s *Server) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeade
 		}, nil
 	}
 
-	resp := &querypb.GetShardLeadersResponse{
-		Status: merr.Success(),
-	}
-
-	percentage := s.meta.CollectionManager.CalculateLoadPercentage(req.GetCollectionID())
-	if percentage < 0 {
-		err := merr.WrapErrCollectionNotLoaded(req.GetCollectionID())
-		log.Warn("failed to GetShardLeaders", zap.Error(err))
-		resp.Status = merr.Status(err)
-		return resp, nil
-	}
-	collection := s.meta.CollectionManager.GetCollection(req.GetCollectionID())
-	if collection != nil && collection.GetStatus() == querypb.LoadStatus_Loaded {
-		// when collection is loaded, regard collection as readable, set percentage == 100
-		percentage = 100
-	}
-	if percentage < 100 {
-		err := merr.WrapErrCollectionNotFullyLoaded(req.GetCollectionID())
-		msg := fmt.Sprintf("collection %v is not fully loaded", req.GetCollectionID())
-		log.Warn(msg)
-		resp.Status = merr.Status(err)
-		return resp, nil
-	}
-
-	channels := s.targetMgr.GetDmChannelsByCollection(req.GetCollectionID(), meta.CurrentTarget)
-	if len(channels) == 0 {
-		err := merr.WrapErrCollectionOnRecovering(req.GetCollectionID(),
-			"loaded collection do not found any channel in target, may be in recovery")
-		log.Warn("failed to get channels", zap.Error(err))
-		resp.Status = merr.Status(err)
-		return resp, nil
-	}
-
-	currentTargets := s.targetMgr.GetSealedSegmentsByCollection(req.GetCollectionID(), meta.CurrentTarget)
-	for _, channel := range channels {
-		log := log.With(zap.String("channel", channel.GetChannelName()))
-
-		leaders := s.dist.LeaderViewManager.GetByFilter(meta.WithChannelName2LeaderView(channel.GetChannelName()))
-
-		readableLeaders := make(map[int64]*meta.LeaderView)
-
-		var channelErr error
-		if len(leaders) == 0 {
-			channelErr = merr.WrapErrChannelLack(channel.GetChannelName(), "channel not subscribed")
-		}
-
-		for _, leader := range leaders {
-			if err := checkers.CheckLeaderAvailable(s.nodeMgr, leader, currentTargets); err != nil {
-				multierr.AppendInto(&channelErr, err)
-				continue
-			}
-
-			readableLeaders[leader.ID] = leader
-		}
-
-		if len(readableLeaders) == 0 {
-			msg := fmt.Sprintf("channel %s is not available in any replica", channel.GetChannelName())
-			log.Warn(msg, zap.Error(channelErr))
-			resp.Status = merr.Status(
-				errors.Wrap(merr.WrapErrChannelNotAvailable(channel.GetChannelName()), channelErr.Error()))
-			resp.Shards = nil
-			return resp, nil
-		}
-
-		readableLeaders = filterDupLeaders(s.meta.ReplicaManager, readableLeaders)
-		ids := make([]int64, 0, len(leaders))
-		addrs := make([]string, 0, len(leaders))
-		for _, leader := range readableLeaders {
-			info := s.nodeMgr.Get(leader.ID)
-			if info != nil {
-				ids = append(ids, info.ID())
-				addrs = append(addrs, info.Addr())
-			}
-		}
-
-		// to avoid node down during GetShardLeaders
-		if len(ids) == 0 {
-			msg := fmt.Sprintf("channel %s is not available in any replica", channel.GetChannelName())
-			log.Warn(msg, zap.Error(channelErr))
-			resp.Status = merr.Status(
-				errors.Wrap(merr.WrapErrChannelNotAvailable(channel.GetChannelName()), channelErr.Error()))
-			resp.Shards = nil
-			return resp, nil
-		}
-
-		resp.Shards = append(resp.Shards, &querypb.ShardLeadersList{
-			ChannelName: channel.GetChannelName(),
-			NodeIds:     ids,
-			NodeAddrs:   addrs,
-		})
-	}
-
-	return resp, nil
+	leaders, err := utils.GetShardLeaders(s.meta, s.targetMgr, s.dist, s.nodeMgr, req.GetCollectionID())
+	return &querypb.GetShardLeadersResponse{
+		Status: merr.Status(err),
+		Shards: leaders,
+	}, nil
 }
 
 func (s *Server) CheckHealth(ctx context.Context, req *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error) {
@@ -1086,8 +1032,6 @@ func (s *Server) TransferNode(ctx context.Context, req *milvuspb.TransferNodeReq
 		log.Warn("failed to transfer node", zap.Error(err))
 		return merr.Status(err), nil
 	}
-	// Recover all replica on the source and target resource group.
-	utils.RecoverAllCollection(s.meta)
 
 	return merr.Success(), nil
 }
@@ -1167,7 +1111,7 @@ func (s *Server) DescribeResourceGroup(ctx context.Context, req *querypb.Describ
 	replicasInRG := s.meta.GetByResourceGroup(req.GetResourceGroup())
 	for _, replica := range replicasInRG {
 		loadedReplicas[replica.GetCollectionID()]++
-		for _, node := range replica.GetNodes() {
+		for _, node := range replica.GetRONodes() {
 			if !s.meta.ContainsNode(replica.GetResourceGroup(), node) {
 				outgoingNodes[replica.GetCollectionID()]++
 			}
@@ -1182,7 +1126,7 @@ func (s *Server) DescribeResourceGroup(ctx context.Context, req *querypb.Describ
 			if replica.GetResourceGroup() == req.GetResourceGroup() {
 				continue
 			}
-			for _, node := range replica.GetNodes() {
+			for _, node := range replica.GetRONodes() {
 				if s.meta.ContainsNode(req.GetResourceGroup(), node) {
 					incomingNodes[collection]++
 				}
@@ -1193,8 +1137,7 @@ func (s *Server) DescribeResourceGroup(ctx context.Context, req *querypb.Describ
 	nodes := make([]*commonpb.NodeInfo, 0, len(rg.GetNodes()))
 	for _, nodeID := range rg.GetNodes() {
 		nodeSessionInfo := s.nodeMgr.Get(nodeID)
-		// Filter offline nodes and nodes in stopping state
-		if nodeSessionInfo != nil && !nodeSessionInfo.IsStoppingState() {
+		if nodeSessionInfo != nil {
 			nodes = append(nodes, &commonpb.NodeInfo{
 				NodeId:   nodeSessionInfo.ID(),
 				Address:  nodeSessionInfo.Addr(),

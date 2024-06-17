@@ -143,6 +143,7 @@ type Scheduler interface {
 	RemoveByNode(node int64)
 	GetNodeSegmentDelta(nodeID int64) int
 	GetNodeChannelDelta(nodeID int64) int
+	GetExecutedFlag(nodeID int64) <-chan struct{}
 	GetChannelTaskNum() int
 	GetSegmentTaskNum() int
 }
@@ -485,6 +486,18 @@ func (scheduler *taskScheduler) GetNodeChannelDelta(nodeID int64) int {
 	return calculateNodeDelta(nodeID, scheduler.channelTasks)
 }
 
+func (scheduler *taskScheduler) GetExecutedFlag(nodeID int64) <-chan struct{} {
+	scheduler.rwmutex.RLock()
+	defer scheduler.rwmutex.RUnlock()
+
+	executor, ok := scheduler.executors[nodeID]
+	if !ok {
+		return nil
+	}
+
+	return executor.GetExecutedFlag()
+}
+
 func (scheduler *taskScheduler) GetChannelTaskNum() int {
 	scheduler.rwmutex.RLock()
 	defer scheduler.rwmutex.RUnlock()
@@ -798,7 +811,11 @@ func (scheduler *taskScheduler) remove(task Task) {
 
 	scheduler.updateTaskMetrics()
 	log.Info("task removed")
-	metrics.QueryCoordTaskLatency.WithLabelValues(scheduler.getTaskMetricsLabel(task), task.Shard()).Observe(float64(task.GetTaskLatency()))
+
+	if scheduler.meta.Exist(task.CollectionID()) {
+		metrics.QueryCoordTaskLatency.WithLabelValues(fmt.Sprint(task.CollectionID()),
+			scheduler.getTaskMetricsLabel(task), task.Shard()).Observe(float64(task.GetTaskLatency()))
+	}
 }
 
 func (scheduler *taskScheduler) getTaskMetricsLabel(task Task) string {

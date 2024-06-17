@@ -163,7 +163,7 @@ func (s *Server) registerHTTPServer() {
 	apiv1 := metricsGinHandler.Group(apiPathPrefix)
 	httpserver.NewHandlers(s.proxy).RegisterRoutesTo(apiv1)
 	management.Register(&management.Handler{
-		Path:        "/",
+		Path:        management.RootPath,
 		HandlerFunc: nil,
 		Handler:     metricsGinHandler.Handler(),
 	})
@@ -172,6 +172,8 @@ func (s *Server) registerHTTPServer() {
 func (s *Server) startHTTPServer(errChan chan error) {
 	defer s.wg.Done()
 	ginHandler := gin.New()
+	ginHandler.Use(accesslog.AccessLogMiddleware)
+
 	ginLogger := gin.LoggerWithConfig(gin.LoggerConfig{
 		SkipPaths: proxy.Params.ProxyCfg.GinLogSkipPaths.GetAsStrings(),
 		Formatter: func(param gin.LogFormatterParams) string {
@@ -182,6 +184,8 @@ func (s *Server) startHTTPServer(errChan chan error) {
 			if !ok {
 				traceID = ""
 			}
+
+			accesslog.SetHTTPParams(&param)
 			return fmt.Sprintf("[%v] [GIN] [%s] [traceID=%s] [code=%3d] [latency=%v] [client=%s] [method=%s] [error=%s]\n",
 				param.TimeStamp.Format("2006/01/02 15:04:05.000 Z07:00"),
 				param.Path,
@@ -465,6 +469,7 @@ func (s *Server) init() error {
 		zap.String("externalAddress", Params.GetAddress()),
 	)
 
+	accesslog.InitAccessLogger(paramtable.Get())
 	serviceName := fmt.Sprintf("Proxy ip: %s, port: %d", Params.IP, Params.Port.GetAsInt())
 	log.Debug("init Proxy's tracer done", zap.String("service name", serviceName))
 
@@ -1228,4 +1233,12 @@ func (s *Server) ListImports(ctx context.Context, req *internalpb.ListImportsReq
 
 func (s *Server) AlterDatabase(ctx context.Context, req *milvuspb.AlterDatabaseRequest) (*commonpb.Status, error) {
 	return s.proxy.AlterDatabase(ctx, req)
+}
+
+func (s *Server) InvalidateShardLeaderCache(ctx context.Context, req *proxypb.InvalidateShardLeaderCacheRequest) (*commonpb.Status, error) {
+	return s.proxy.InvalidateShardLeaderCache(ctx, req)
+}
+
+func (s *Server) DescribeDatabase(ctx context.Context, req *milvuspb.DescribeDatabaseRequest) (*milvuspb.DescribeDatabaseResponse, error) {
+	return s.proxy.DescribeDatabase(ctx, req)
 }

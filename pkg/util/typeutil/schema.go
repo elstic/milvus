@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"sort"
 	"strconv"
 	"unsafe"
@@ -374,6 +375,20 @@ func IsDenseFloatVectorType(dataType schemapb.DataType) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// return VectorTypeSize for each dim (byte)
+func VectorTypeSize(dataType schemapb.DataType) float64 {
+	switch dataType {
+	case schemapb.DataType_FloatVector, schemapb.DataType_SparseFloatVector:
+		return 4.0
+	case schemapb.DataType_BinaryVector:
+		return 0.125
+	case schemapb.DataType_Float16Vector, schemapb.DataType_BFloat16Vector:
+		return 2.0
+	default:
+		return 0.0
 	}
 }
 
@@ -1084,6 +1099,16 @@ func IsFieldDataTypeSupportMaterializedView(fieldSchema *schemapb.FieldSchema) b
 	return fieldSchema.DataType == schemapb.DataType_VarChar || fieldSchema.DataType == schemapb.DataType_String
 }
 
+// HasClusterKey check if a collection schema has ClusterKey field
+func HasClusterKey(schema *schemapb.CollectionSchema) bool {
+	for _, fieldSchema := range schema.Fields {
+		if fieldSchema.IsClusteringKey {
+			return true
+		}
+	}
+	return false
+}
+
 // GetPrimaryFieldData get primary field data from all field data inserted from sdk
 func GetPrimaryFieldData(datas []*schemapb.FieldData, primaryFieldSchema *schemapb.FieldSchema) (*schemapb.FieldData, error) {
 	primaryFieldID := primaryFieldSchema.FieldID
@@ -1322,10 +1347,11 @@ func ComparePK(pkA, pkB interface{}) bool {
 
 type ResultWithID interface {
 	GetIds() *schemapb.IDs
+	GetHasMoreResult() bool
 }
 
 // SelectMinPK select the index of the minPK in results T of the cursors.
-func SelectMinPK[T ResultWithID](limit int64, results []T, cursors []int64) (int, bool) {
+func SelectMinPK[T ResultWithID](results []T, cursors []int64) (int, bool) {
 	var (
 		sel               = -1
 		drainResult       = false
@@ -1335,8 +1361,9 @@ func SelectMinPK[T ResultWithID](limit int64, results []T, cursors []int64) (int
 		minStrPK string
 	)
 	for i, cursor := range cursors {
-		// if result size < limit, this means we should ignore the result from this segment
-		if int(cursor) >= GetSizeOfIDs(results[i].GetIds()) && (GetSizeOfIDs(results[i].GetIds()) == int(limit)) {
+		// if cursor has run out of all results from one result and this result has more matched results
+		// in this case we have tell reduce to stop because better results may be retrieved in the following iteration
+		if int(cursor) >= GetSizeOfIDs(results[i].GetIds()) && (results[i].GetHasMoreResult()) {
 			drainResult = true
 			continue
 		}
@@ -1505,58 +1532,10 @@ func SparseFloatRowSetAt(row []byte, pos int, idx uint32, value float32) {
 	binary.LittleEndian.PutUint32(row[pos*8+4:], math.Float32bits(value))
 }
 
-func CreateSparseFloatRow(indices []uint32, values []float32) []byte {
-	row := make([]byte, len(indices)*8)
-	for i := 0; i < len(indices); i++ {
-		SparseFloatRowSetAt(row, i, indices[i], values[i])
-	}
-	return row
-}
+func SortSparseFloatRow(indices []uint32, values []float32) ([]uint32, []float32) {
+	elemCount := len(indices)
 
-type sparseFloatVectorJSONRepresentation struct {
-	Indices []uint32  `json:"indices"`
-	Values  []float32 `json:"values"`
-}
-
-// accepted format:
-//   - {"indices": [1, 2, 3], "values": [0.1, 0.2, 0.3]}
-//   - {"1": 0.1, "2": 0.2, "3": 0.3}
-//
-// we don't require the indices to be sorted from user input, but the returned
-// byte representation must have indices sorted
-func CreateSparseFloatRowFromJSON(input []byte) ([]byte, error) {
-	var indices []uint32
-	var values []float32
-
-	var vec sparseFloatVectorJSONRepresentation
-	decoder := json.NewDecoder(bytes.NewReader(input))
-	decoder.DisallowUnknownFields()
-	err := decoder.Decode(&vec)
-	if err == nil {
-		if len(vec.Indices) != len(vec.Values) {
-			return nil, fmt.Errorf("indices and values length mismatch")
-		}
-		if len(vec.Indices) == 0 {
-			return nil, fmt.Errorf("empty indices/values in JSON input")
-		}
-		indices = vec.Indices
-		values = vec.Values
-	} else {
-		var vec2 map[uint32]float32
-		decoder = json.NewDecoder(bytes.NewReader(input))
-		decoder.DisallowUnknownFields()
-		err = decoder.Decode(&vec2)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse JSON input: %v", err)
-		}
-
-		for idx, val := range vec2 {
-			indices = append(indices, idx)
-			values = append(values, val)
-		}
-	}
-
-	indexOrder := make([]int, len(indices))
+	indexOrder := make([]int, elemCount)
 	for i := range indexOrder {
 		indexOrder[i] = i
 	}
@@ -1565,18 +1544,152 @@ func CreateSparseFloatRowFromJSON(input []byte) ([]byte, error) {
 		return indices[indexOrder[i]] < indices[indexOrder[j]]
 	})
 
-	sortedIndices := make([]uint32, len(indices))
-	sortedValues := make([]float32, len(values))
+	sortedIndices := make([]uint32, elemCount)
+	sortedValues := make([]float32, elemCount)
 	for i, index := range indexOrder {
 		sortedIndices[i] = indices[index]
 		sortedValues[i] = values[index]
 	}
 
+	return sortedIndices, sortedValues
+}
+
+func CreateSparseFloatRow(indices []uint32, values []float32) []byte {
+	row := make([]byte, len(indices)*8)
+	for i := 0; i < len(indices); i++ {
+		SparseFloatRowSetAt(row, i, indices[i], values[i])
+	}
+	return row
+}
+
+// accepted format:
+//   - {"indices": [1, 2, 3], "values": [0.1, 0.2, 0.3]}    # format1
+//   - {"1": 0.1, "2": 0.2, "3": 0.3}                       # format2
+//
+// we don't require the indices to be sorted from user input, but the returned
+// byte representation must have indices sorted
+func CreateSparseFloatRowFromMap(input map[string]interface{}) ([]byte, error) {
+	var indices []uint32
+	var values []float32
+
+	if len(input) == 0 {
+		return nil, fmt.Errorf("empty JSON input")
+	}
+
+	getValue := func(key interface{}) (float32, error) {
+		var val float64
+		switch v := key.(type) {
+		case int:
+			val = float64(v)
+		case float64:
+			val = v
+		case json.Number:
+			if num, err := strconv.ParseFloat(v.String(), 64); err == nil {
+				val = num
+			} else {
+				return 0, fmt.Errorf("invalid value type in JSON: %s", reflect.TypeOf(v))
+			}
+		default:
+			return 0, fmt.Errorf("invalid value type in JSON: %s", reflect.TypeOf(key))
+		}
+		if VerifyFloat(val) != nil {
+			return 0, fmt.Errorf("invalid value in JSON: %v", val)
+		}
+		if val > math.MaxFloat32 {
+			return 0, fmt.Errorf("value too large in JSON: %v", val)
+		}
+		return float32(val), nil
+	}
+
+	getIndex := func(key interface{}) (uint32, error) {
+		var idx int64
+		switch v := key.(type) {
+		case int:
+			idx = int64(v)
+		case float64:
+			// check if the float64 is actually an integer
+			if v != float64(int64(v)) {
+				return 0, fmt.Errorf("invalid index in JSON: %v", v)
+			}
+			idx = int64(v)
+		case json.Number:
+			if num, err := strconv.ParseInt(v.String(), 0, 64); err == nil {
+				idx = num
+			} else {
+				return 0, err
+			}
+		default:
+			return 0, fmt.Errorf("invalid index type in JSON: %s", reflect.TypeOf(key))
+		}
+		if idx >= math.MaxUint32 {
+			return 0, fmt.Errorf("index too large in JSON: %v", idx)
+		}
+		return uint32(idx), nil
+	}
+
+	jsonIndices, ok1 := input["indices"].([]interface{})
+	jsonValues, ok2 := input["values"].([]interface{})
+
+	if ok1 && ok2 {
+		// try format1
+		for _, idx := range jsonIndices {
+			index, err := getIndex(idx)
+			if err != nil {
+				return nil, err
+			}
+			indices = append(indices, index)
+		}
+		for _, val := range jsonValues {
+			value, err := getValue(val)
+			if err != nil {
+				return nil, err
+			}
+			values = append(values, value)
+		}
+	} else if !ok1 && !ok2 {
+		// try format2
+		for k, v := range input {
+			idx, err := strconv.ParseUint(k, 0, 32)
+			if err != nil {
+				return nil, err
+			}
+
+			val, err := getValue(v)
+			if err != nil {
+				return nil, err
+			}
+
+			indices = append(indices, uint32(idx))
+			values = append(values, val)
+		}
+	} else {
+		return nil, fmt.Errorf("invalid JSON input")
+	}
+
+	if len(indices) != len(values) {
+		return nil, fmt.Errorf("indices and values length mismatch")
+	}
+	if len(indices) == 0 {
+		return nil, fmt.Errorf("empty indices/values in JSON input")
+	}
+
+	sortedIndices, sortedValues := SortSparseFloatRow(indices, values)
 	row := CreateSparseFloatRow(sortedIndices, sortedValues)
 	if err := ValidateSparseFloatRows(row); err != nil {
 		return nil, err
 	}
 	return row, nil
+}
+
+func CreateSparseFloatRowFromJSON(input []byte) ([]byte, error) {
+	var vec map[string]interface{}
+	decoder := json.NewDecoder(bytes.NewReader(input))
+	decoder.DisallowUnknownFields()
+	err := decoder.Decode(&vec)
+	if err != nil {
+		return nil, err
+	}
+	return CreateSparseFloatRowFromMap(vec)
 }
 
 // dim of a sparse float vector is the maximum/last index + 1

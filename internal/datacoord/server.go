@@ -124,11 +124,12 @@ type Server struct {
 	importScheduler  ImportScheduler
 	importChecker    ImportChecker
 
-	compactionTrigger     trigger
-	compactionHandler     compactionPlanContext
-	compactionViewManager *CompactionViewManager
+	compactionTrigger        trigger
+	compactionHandler        compactionPlanContext
+	compactionTriggerManager *CompactionTriggerManager
 
-	metricsCacheManager *metricsinfo.MetricsCacheManager
+	syncSegmentsScheduler *SyncSegmentsScheduler
+	metricsCacheManager   *metricsinfo.MetricsCacheManager
 
 	flushCh         chan UniqueID
 	buildIndexCh    chan UniqueID
@@ -151,9 +152,10 @@ type Server struct {
 	// indexCoord             types.IndexCoord
 
 	// segReferManager  *SegmentReferenceManager
-	indexBuilder              *indexBuilder
 	indexNodeManager          *IndexNodeManager
 	indexEngineVersionManager IndexEngineVersionManager
+
+	taskScheduler *taskScheduler
 
 	// manage ways that data coord access other coord
 	broker broker.Broker
@@ -343,6 +345,7 @@ func (s *Server) initDataCoord() error {
 	log.Info("init rootcoord client done")
 
 	s.broker = broker.NewCoordinatorBroker(s.rootCoordClient)
+	s.allocator = newRootCoordAllocator(s.rootCoordClient)
 
 	storageCli, err := s.newChunkManagerFactory()
 	if err != nil {
@@ -364,8 +367,6 @@ func (s *Server) initDataCoord() error {
 	}
 	log.Info("init datanode cluster done")
 
-	s.allocator = newRootCoordAllocator(s.rootCoordClient)
-
 	s.initIndexNodeManager()
 
 	if err = s.initServiceDiscovery(); err != nil {
@@ -373,6 +374,7 @@ func (s *Server) initDataCoord() error {
 	}
 	log.Info("init service discovery done")
 
+	s.initTaskScheduler(storageCli)
 	if Params.DataCoordCfg.EnableCompaction.GetAsBool() {
 		s.createCompactionHandler()
 		s.createCompactionTrigger()
@@ -385,7 +387,6 @@ func (s *Server) initDataCoord() error {
 	log.Info("init segment manager done")
 
 	s.initGarbageCollection(storageCli)
-	s.initIndexBuilder(storageCli)
 
 	s.importMeta, err = NewImportMeta(s.meta.catalog)
 	if err != nil {
@@ -393,6 +394,8 @@ func (s *Server) initDataCoord() error {
 	}
 	s.importScheduler = NewImportScheduler(s.meta, s.cluster, s.allocator, s.importMeta, s.buildIndexCh)
 	s.importChecker = NewImportChecker(s.meta, s.broker, s.cluster, s.allocator, s.segmentManager, s.importMeta)
+
+	s.syncSegmentsScheduler = newSyncSegmentsScheduler(s.meta, s.channelManager, s.sessionManager)
 
 	s.serverLoopCtx, s.serverLoopCancel = context.WithCancel(s.ctx)
 
@@ -417,10 +420,11 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) startDataCoord() {
+	s.taskScheduler.Start()
 	if Params.DataCoordCfg.EnableCompaction.GetAsBool() {
 		s.compactionHandler.start()
 		s.compactionTrigger.start()
-		s.compactionViewManager.Start()
+		s.compactionTriggerManager.Start()
 	}
 	s.startServerLoop()
 
@@ -466,6 +470,13 @@ func (s *Server) startDataCoord() {
 	sessionutil.SaveServerInfo(typeutil.DataCoordRole, s.session.GetServerID())
 }
 
+func (s *Server) GetServerID() int64 {
+	if s.session != nil {
+		return s.session.GetServerID()
+	}
+	return paramtable.GetNodeID()
+}
+
 func (s *Server) afterStart() {}
 
 func (s *Server) initCluster() error {
@@ -473,13 +484,20 @@ func (s *Server) initCluster() error {
 		return nil
 	}
 
-	var err error
-	s.channelManager, err = NewChannelManager(s.watchClient, s.handler, withMsgstreamFactory(s.factory),
-		withStateChecker(), withBgChecker())
-	if err != nil {
-		return err
-	}
 	s.sessionManager = NewSessionManagerImpl(withSessionCreator(s.dataNodeCreator))
+
+	var err error
+	if paramtable.Get().DataCoordCfg.EnableBalanceChannelWithRPC.GetAsBool() {
+		s.channelManager, err = NewChannelManagerV2(s.watchClient, s.handler, s.sessionManager, s.allocator, withCheckerV2())
+		if err != nil {
+			return err
+		}
+	} else {
+		s.channelManager, err = NewChannelManager(s.watchClient, s.handler, withMsgstreamFactory(s.factory), withStateChecker(), withBgChecker())
+		if err != nil {
+			return err
+		}
+	}
 	s.cluster = NewClusterImpl(s.sessionManager, s.channelManager)
 	return nil
 }
@@ -510,14 +528,13 @@ func (s *Server) SetIndexNodeCreator(f func(context.Context, string, int64) (typ
 }
 
 func (s *Server) createCompactionHandler() {
-	s.compactionHandler = newCompactionPlanHandler(s.sessionManager, s.channelManager, s.meta, s.allocator)
-	triggerv2 := NewCompactionTriggerManager(s.allocator, s.compactionHandler)
-	s.compactionViewManager = NewCompactionViewManager(s.meta, triggerv2, s.allocator)
+	s.compactionHandler = newCompactionPlanHandler(s.cluster, s.sessionManager, s.channelManager, s.meta, s.allocator, s.taskScheduler, s.handler)
+	s.compactionTriggerManager = NewCompactionTriggerManager(s.allocator, s.handler, s.compactionHandler, s.meta)
 }
 
 func (s *Server) stopCompactionHandler() {
 	s.compactionHandler.stop()
-	s.compactionViewManager.Close()
+	s.compactionTriggerManager.Close()
 }
 
 func (s *Server) createCompactionTrigger() {
@@ -559,11 +576,21 @@ func (s *Server) initServiceDiscovery() error {
 	log.Info("DataCoord success to get DataNode sessions", zap.Any("sessions", sessions))
 
 	datanodes := make([]*NodeInfo, 0, len(sessions))
+	legacyVersion, err := semver.Parse(paramtable.Get().DataCoordCfg.LegacyVersionWithoutRPCWatch.GetValue())
+	if err != nil {
+		log.Warn("DataCoord failed to init service discovery", zap.Error(err))
+	}
+
 	for _, session := range sessions {
 		info := &NodeInfo{
 			NodeID:  session.ServerID,
 			Address: session.Address,
 		}
+
+		if session.Version.LTE(legacyVersion) {
+			info.IsLegacy = true
+		}
+
 		datanodes = append(datanodes, info)
 	}
 
@@ -651,14 +678,22 @@ func (s *Server) initMeta(chunkManager storage.ChunkManager) error {
 		if err != nil {
 			return err
 		}
+
+		// Load collection information asynchronously
+		// HINT: please make sure this is the last step in the `reloadEtcdFn` function !!!
+		go func() {
+			_ = retry.Do(s.ctx, func() error {
+				return s.meta.reloadCollectionsFromRootcoord(s.ctx, s.broker)
+			}, retry.Sleep(time.Second), retry.Attempts(connMetaMaxRetryTime))
+		}()
 		return nil
 	}
 	return retry.Do(s.ctx, reloadEtcdFn, retry.Attempts(connMetaMaxRetryTime))
 }
 
-func (s *Server) initIndexBuilder(manager storage.ChunkManager) {
-	if s.indexBuilder == nil {
-		s.indexBuilder = newIndexBuilder(s.ctx, s.meta, s.indexNodeManager, manager, s.indexEngineVersionManager, s.handler)
+func (s *Server) initTaskScheduler(manager storage.ChunkManager) {
+	if s.taskScheduler == nil {
+		s.taskScheduler = newTaskScheduler(s.ctx, s.meta, s.indexNodeManager, manager, s.indexEngineVersionManager, s.handler)
 	}
 }
 
@@ -681,6 +716,7 @@ func (s *Server) startServerLoop() {
 	go s.importScheduler.Start()
 	go s.importChecker.Start()
 	s.garbageCollector.start()
+	s.syncSegmentsScheduler.Start()
 }
 
 // startDataNodeTtLoop start a goroutine to recv data node tt msg from msgstream
@@ -878,6 +914,7 @@ func (s *Server) handleSessionEvent(ctx context.Context, role string, event *ses
 	if event == nil {
 		return nil
 	}
+	log := log.Ctx(ctx)
 	switch role {
 	case typeutil.DataNodeRole:
 		info := &datapb.DataNodeInfo{
@@ -996,6 +1033,7 @@ func (s *Server) startFlushLoop(ctx context.Context) {
 // 2. notify RootCoord segment is flushed
 // 3. change segment state to `Flushed` in meta
 func (s *Server) postFlush(ctx context.Context, segmentID UniqueID) error {
+	log := log.Ctx(ctx)
 	segment := s.meta.GetHealthySegment(segmentID)
 	if segment == nil {
 		return merr.WrapErrSegmentNotFound(segmentID, "segment not found, might be a faked segment, ignore post flush")
@@ -1071,6 +1109,7 @@ func (s *Server) Stop() error {
 
 	s.importScheduler.Close()
 	s.importChecker.Close()
+	s.syncSegmentsScheduler.Stop()
 
 	if Params.DataCoordCfg.EnableCompaction.GetAsBool() {
 		s.stopCompactionTrigger()
@@ -1078,7 +1117,7 @@ func (s *Server) Stop() error {
 	}
 	logutil.Logger(s.ctx).Info("datacoord compaction stopped")
 
-	s.indexBuilder.Stop()
+	s.taskScheduler.Stop()
 	logutil.Logger(s.ctx).Info("datacoord index builder stopped")
 
 	s.cluster.Close()

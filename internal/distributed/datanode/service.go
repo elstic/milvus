@@ -91,7 +91,7 @@ func NewServer(ctx context.Context, factory dependency.Factory) (*Server, error)
 	}
 
 	s.serverID.Store(paramtable.GetNodeID())
-	s.datanode = dn.NewDataNode(s.ctx, s.factory, s.serverID.Load())
+	s.datanode = dn.NewDataNode(s.ctx, s.factory)
 	return s, nil
 }
 
@@ -354,8 +354,8 @@ func (s *Server) GetMetrics(ctx context.Context, request *milvuspb.GetMetricsReq
 	return s.datanode.GetMetrics(ctx, request)
 }
 
-func (s *Server) Compaction(ctx context.Context, request *datapb.CompactionPlan) (*commonpb.Status, error) {
-	return s.datanode.Compaction(ctx, request)
+func (s *Server) CompactionV2(ctx context.Context, request *datapb.CompactionPlan) (*commonpb.Status, error) {
+	return s.datanode.CompactionV2(ctx, request)
 }
 
 // GetCompactionState gets the Compaction tasks state of DataNode
@@ -401,4 +401,12 @@ func (s *Server) QueryImport(ctx context.Context, req *datapb.QueryImportRequest
 
 func (s *Server) DropImport(ctx context.Context, req *datapb.DropImportRequest) (*commonpb.Status, error) {
 	return s.datanode.DropImport(ctx, req)
+}
+
+func (s *Server) QuerySlot(ctx context.Context, req *datapb.QuerySlotRequest) (*datapb.QuerySlotResponse, error) {
+	return s.datanode.QuerySlot(ctx, req)
+}
+
+func (s *Server) DropCompactionPlan(ctx context.Context, req *datapb.DropCompactionPlanRequest) (*commonpb.Status, error) {
+	return s.datanode.DropCompactionPlan(ctx, req)
 }

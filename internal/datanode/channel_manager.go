@@ -27,11 +27,15 @@ import (
 
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/pkg/log"
+	"github.com/milvus-io/milvus/pkg/util/lifetime"
 	"github.com/milvus-io/milvus/pkg/util/merr"
 	"github.com/milvus-io/milvus/pkg/util/typeutil"
 )
 
-type releaseFunc func(channel string)
+type (
+	releaseFunc func(channel string)
+	watchFunc   func(ctx context.Context, dn *DataNode, info *datapb.ChannelWatchInfo, tickler *tickler) (*dataSyncService, error)
+)
 
 type ChannelManager interface {
 	Submit(info *datapb.ChannelWatchInfo) error
@@ -52,24 +56,22 @@ type ChannelManagerImpl struct {
 
 	releaseFunc releaseFunc
 
-	closeCh     chan struct{}
-	closeOnce   sync.Once
+	closeCh     lifetime.SafeChan
 	closeWaiter sync.WaitGroup
 }
 
 func NewChannelManager(dn *DataNode) *ChannelManagerImpl {
-	fm := newFlowgraphManager()
 	cm := ChannelManagerImpl{
 		dn:        dn,
-		fgManager: fm,
+		fgManager: dn.flowgraphManager,
 
 		communicateCh: make(chan *opState, 100),
 		opRunners:     typeutil.NewConcurrentMap[string, *opRunner](),
 		abnormals:     typeutil.NewConcurrentMap[int64, string](),
 
-		releaseFunc: fm.RemoveFlowgraph,
+		releaseFunc: dn.flowgraphManager.RemoveFlowgraph,
 
-		closeCh: make(chan struct{}),
+		closeCh: lifetime.NewSafeChan(),
 	}
 
 	return &cm
@@ -77,6 +79,27 @@ func NewChannelManager(dn *DataNode) *ChannelManagerImpl {
 
 func (m *ChannelManagerImpl) Submit(info *datapb.ChannelWatchInfo) error {
 	channel := info.GetVchan().GetChannelName()
+
+	// skip enqueue datacoord re-submit the same operations
+	if runner, ok := m.opRunners.Get(channel); ok {
+		if runner.Exist(info.GetOpID()) {
+			log.Warn("op already exist, skip", zap.Int64("opID", info.GetOpID()), zap.String("channel", channel))
+			return nil
+		}
+	}
+
+	if info.GetState() == datapb.ChannelWatchState_ToWatch &&
+		m.fgManager.HasFlowgraphWithOpID(channel, info.GetOpID()) {
+		log.Warn("Watch op already finished, skip", zap.Int64("opID", info.GetOpID()), zap.String("channel", channel))
+		return nil
+	}
+
+	if info.GetState() == datapb.ChannelWatchState_ToRelease &&
+		!m.fgManager.HasFlowgraph(channel) {
+		log.Warn("Release op already finished, skip", zap.Int64("opID", info.GetOpID()), zap.String("channel", channel))
+		return nil
+	}
+
 	runner := m.getOrCreateRunner(channel)
 	return runner.Enqueue(info)
 }
@@ -131,14 +154,14 @@ func (m *ChannelManagerImpl) GetProgress(info *datapb.ChannelWatchInfo) *datapb.
 }
 
 func (m *ChannelManagerImpl) Close() {
-	m.closeOnce.Do(func() {
+	if m.opRunners != nil {
 		m.opRunners.Range(func(channel string, runner *opRunner) bool {
 			runner.Close()
 			return true
 		})
-		close(m.closeCh)
-		m.closeWaiter.Wait()
-	})
+	}
+	m.closeCh.Close()
+	m.closeWaiter.Wait()
 }
 
 func (m *ChannelManagerImpl) Start() {
@@ -150,7 +173,7 @@ func (m *ChannelManagerImpl) Start() {
 			select {
 			case opState := <-m.communicateCh:
 				m.handleOpState(opState)
-			case <-m.closeCh:
+			case <-m.closeCh.CloseCh():
 				log.Info("DataNode ChannelManager exit")
 				return
 			}
@@ -170,42 +193,33 @@ func (m *ChannelManagerImpl) handleOpState(opState *opState) {
 	case datapb.ChannelWatchState_WatchSuccess:
 		log.Info("Success to watch")
 		m.fgManager.AddFlowgraph(opState.fg)
-		m.finishOp(opState.opID, opState.channel)
 
 	case datapb.ChannelWatchState_WatchFailure:
 		log.Info("Fail to watch")
-		m.finishOp(opState.opID, opState.channel)
 
 	case datapb.ChannelWatchState_ReleaseSuccess:
 		log.Info("Success to release")
-		m.finishOp(opState.opID, opState.channel)
-		m.destoryRunner(opState.channel)
 
 	case datapb.ChannelWatchState_ReleaseFailure:
 		log.Info("Fail to release, add channel to abnormal lists")
 		m.abnormals.Insert(opState.opID, opState.channel)
-		m.finishOp(opState.opID, opState.channel)
-		m.destoryRunner(opState.channel)
 	}
+
+	m.finishOp(opState.opID, opState.channel)
 }
 
 func (m *ChannelManagerImpl) getOrCreateRunner(channel string) *opRunner {
-	runner, loaded := m.opRunners.GetOrInsert(channel, NewOpRunner(channel, m.dn, m.releaseFunc, m.communicateCh))
+	runner, loaded := m.opRunners.GetOrInsert(channel, NewOpRunner(channel, m.dn, m.releaseFunc, executeWatch, m.communicateCh))
 	if !loaded {
 		runner.Start()
 	}
 	return runner
 }
 
-func (m *ChannelManagerImpl) destoryRunner(channel string) {
-	if runner, loaded := m.opRunners.GetAndRemove(channel); loaded {
-		runner.Close()
-	}
-}
-
 func (m *ChannelManagerImpl) finishOp(opID int64, channel string) {
-	if runner, loaded := m.opRunners.Get(channel); loaded {
+	if runner, loaded := m.opRunners.GetAndRemove(channel); loaded {
 		runner.FinishOp(opID)
+		runner.Close()
 	}
 }
 
@@ -217,26 +231,27 @@ type opRunner struct {
 	channel     string
 	dn          *DataNode
 	releaseFunc releaseFunc
+	watchFunc   watchFunc
 
 	guard      sync.RWMutex
 	allOps     map[UniqueID]*opInfo // opID -> tickler
 	opsInQueue chan *datapb.ChannelWatchInfo
 	resultCh   chan *opState
 
-	closeWg   sync.WaitGroup
-	closeOnce sync.Once
-	closeCh   chan struct{}
+	closeCh lifetime.SafeChan
+	closeWg sync.WaitGroup
 }
 
-func NewOpRunner(channel string, dn *DataNode, f releaseFunc, resultCh chan *opState) *opRunner {
+func NewOpRunner(channel string, dn *DataNode, releaseF releaseFunc, watchF watchFunc, resultCh chan *opState) *opRunner {
 	return &opRunner{
 		channel:     channel,
 		dn:          dn,
-		releaseFunc: f,
+		releaseFunc: releaseF,
+		watchFunc:   watchF,
 		opsInQueue:  make(chan *datapb.ChannelWatchInfo, 10),
 		allOps:      make(map[UniqueID]*opInfo),
 		resultCh:    resultCh,
-		closeCh:     make(chan struct{}),
+		closeCh:     lifetime.NewSafeChan(),
 	}
 }
 
@@ -248,7 +263,7 @@ func (r *opRunner) Start() {
 			select {
 			case info := <-r.opsInQueue:
 				r.NotifyState(r.Execute(info))
-			case <-r.closeCh:
+			case <-r.closeCh.CloseCh():
 				return
 			}
 		}
@@ -301,7 +316,7 @@ func (r *opRunner) Execute(info *datapb.ChannelWatchInfo) *opState {
 	}
 
 	// ToRelease state
-	return releaseWithTimer(r.releaseFunc, info.GetVchan().GetChannelName(), info.GetOpID())
+	return r.releaseWithTimer(r.releaseFunc, info.GetVchan().GetChannelName(), info.GetOpID())
 }
 
 // watchWithTimer will return WatchFailure after WatchTimeoutInterval
@@ -314,25 +329,25 @@ func (r *opRunner) watchWithTimer(info *datapb.ChannelWatchInfo) *opState {
 
 	r.guard.Lock()
 	opInfo, ok := r.allOps[info.GetOpID()]
+	r.guard.Unlock()
 	if !ok {
 		opState.state = datapb.ChannelWatchState_WatchFailure
 		return opState
 	}
 	tickler := newTickler()
 	opInfo.tickler = tickler
-	r.guard.Unlock()
 
 	var (
-		successSig = make(chan struct{}, 1)
-		waiter     sync.WaitGroup
+		successSig   = make(chan struct{}, 1)
+		finishWaiter sync.WaitGroup
 	)
 
 	watchTimeout := Params.DataCoordCfg.WatchTimeoutInterval.GetAsDuration(time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), watchTimeout)
 	defer cancel()
 
-	startTimer := func(wg *sync.WaitGroup) {
-		defer wg.Done()
+	startTimer := func(finishWg *sync.WaitGroup) {
+		defer finishWg.Done()
 
 		timer := time.NewTimer(watchTimeout)
 		defer timer.Stop()
@@ -348,6 +363,13 @@ func (r *opRunner) watchWithTimer(info *datapb.ChannelWatchInfo) *opState {
 				log.Info("Stop timer for ToWatch operation timeout")
 				return
 
+			case <-r.closeCh.CloseCh():
+				// runner closed from outside
+				tickler.close()
+				cancel()
+				log.Info("Suspend ToWatch operation from outside of opRunner")
+				return
+
 			case <-tickler.progressSig:
 				log.Info("Reset timer for tickler updated")
 				timer.Reset(watchTimeout)
@@ -360,11 +382,12 @@ func (r *opRunner) watchWithTimer(info *datapb.ChannelWatchInfo) *opState {
 		}
 	}
 
-	waiter.Add(2)
-	go startTimer(&waiter)
+	finishWaiter.Add(2)
+	go startTimer(&finishWaiter)
+
 	go func() {
-		defer waiter.Done()
-		fg, err := executeWatch(ctx, r.dn, info, tickler)
+		defer finishWaiter.Done()
+		fg, err := r.watchFunc(ctx, r.dn, info, tickler)
 		if err != nil {
 			opState.state = datapb.ChannelWatchState_WatchFailure
 		} else {
@@ -374,46 +397,53 @@ func (r *opRunner) watchWithTimer(info *datapb.ChannelWatchInfo) *opState {
 		}
 	}()
 
-	waiter.Wait()
+	finishWaiter.Wait()
 	return opState
 }
 
 // releaseWithTimer will return ReleaseFailure after WatchTimeoutInterval
-func releaseWithTimer(releaseFunc releaseFunc, channel string, opID UniqueID) *opState {
+func (r *opRunner) releaseWithTimer(releaseFunc releaseFunc, channel string, opID UniqueID) *opState {
 	opState := &opState{
 		channel: channel,
 		opID:    opID,
 	}
 	var (
-		successSig = make(chan struct{}, 1)
-		waiter     sync.WaitGroup
+		successSig   = make(chan struct{}, 1)
+		finishWaiter sync.WaitGroup
 	)
 
-	log := log.With(zap.String("channel", channel))
-	startTimer := func(wg *sync.WaitGroup) {
-		defer wg.Done()
+	log := log.With(zap.Int64("opID", opID), zap.String("channel", channel))
+	startTimer := func(finishWaiter *sync.WaitGroup) {
+		defer finishWaiter.Done()
+
 		releaseTimeout := Params.DataCoordCfg.WatchTimeoutInterval.GetAsDuration(time.Second)
 		timer := time.NewTimer(releaseTimeout)
 		defer timer.Stop()
 
-		log.Info("Start timer for ToRelease operation", zap.Duration("timeout", releaseTimeout))
+		log := log.With(zap.Duration("timeout", releaseTimeout))
+		log.Info("Start ToRelease timer")
 		for {
 			select {
 			case <-timer.C:
-				log.Info("Stop timer for ToRelease operation timeout", zap.Duration("timeout", releaseTimeout))
+				log.Info("Stop timer for ToRelease operation timeout")
 				opState.state = datapb.ChannelWatchState_ReleaseFailure
 				return
 
+			case <-r.closeCh.CloseCh():
+				// runner closed from outside
+				log.Info("Stop timer for opRunner closed")
+				return
+
 			case <-successSig:
-				log.Info("Stop timer for ToRelease operation succeeded", zap.Duration("timeout", releaseTimeout))
+				log.Info("Stop timer for ToRelease operation succeeded")
 				opState.state = datapb.ChannelWatchState_ReleaseSuccess
 				return
 			}
 		}
 	}
 
-	waiter.Add(1)
-	go startTimer(&waiter)
+	finishWaiter.Add(1)
+	go startTimer(&finishWaiter)
 	go func() {
 		// TODO: failure should panic this DN, but we're not sure how
 		//   to recover when releaseFunc stuck.
@@ -427,7 +457,7 @@ func releaseWithTimer(releaseFunc releaseFunc, channel string, opID UniqueID) *o
 		successSig <- struct{}{}
 	}()
 
-	waiter.Wait()
+	finishWaiter.Wait()
 	return opState
 }
 
@@ -436,18 +466,8 @@ func (r *opRunner) NotifyState(state *opState) {
 }
 
 func (r *opRunner) Close() {
-	r.guard.Lock()
-	for _, info := range r.allOps {
-		if info.tickler != nil {
-			info.tickler.close()
-		}
-	}
-	r.guard.Unlock()
-
-	r.closeOnce.Do(func() {
-		close(r.closeCh)
-		r.closeWg.Wait()
-	})
+	r.closeCh.Close()
+	r.closeWg.Wait()
 }
 
 type opState struct {

@@ -5,14 +5,17 @@ import uuid
 from utils.util_log import test_log as logger
 from minio import Minio
 from minio.error import S3Error
-from minio.commonconfig import REPLACE, CopySource
+from minio.commonconfig import CopySource
+from tenacity import retry, retry_if_exception_type, stop_after_attempt
+from requests.exceptions import ConnectionError
+
 
 def logger_request_response(response, url, tt, headers, data, str_data, str_response, method):
     if len(data) > 2000:
         data = data[:1000] + "..." + data[-1000:]
     try:
         if response.status_code == 200:
-            if ('code' in response.json() and response.json()["code"] == 200) or (
+            if ('code' in response.json() and response.json()["code"] == 0) or (
                     'Code' in response.json() and response.json()["Code"] == 0):
                 logger.debug(
                     f"\nmethod: {method}, \nurl: {url}, \ncost time: {tt}, \nheader: {headers}, \npayload: {str_data}, \nresponse: {str_response}")
@@ -45,6 +48,9 @@ class Requests:
         }
         return headers
 
+    # retry when request failed caused by network or server error
+
+    @retry(retry=retry_if_exception_type(ConnectionError), stop=stop_after_attempt(3))
     def post(self, url, headers=None, data=None, params=None):
         headers = headers if headers is not None else self.update_headers()
         data = json.dumps(data)
@@ -56,6 +62,7 @@ class Requests:
         logger_request_response(response, url, tt, headers, data, str_data, str_response, "post")
         return response
 
+    @retry(retry=retry_if_exception_type(ConnectionError), stop=stop_after_attempt(3))
     def get(self, url, headers=None, params=None, data=None):
         headers = headers if headers is not None else self.update_headers()
         data = json.dumps(data)
@@ -70,6 +77,7 @@ class Requests:
         logger_request_response(response, url, tt, headers, data, str_data, str_response, "get")
         return response
 
+    @retry(retry=retry_if_exception_type(ConnectionError), stop=stop_after_attempt(3))
     def put(self, url, headers=None, data=None):
         headers = headers if headers is not None else self.update_headers()
         data = json.dumps(data)
@@ -81,6 +89,7 @@ class Requests:
         logger_request_response(response, url, tt, headers, data, str_data, str_response, "put")
         return response
 
+    @retry(retry=retry_if_exception_type(ConnectionError), stop=stop_after_attempt(3))
     def delete(self, url, headers=None, data=None):
         headers = headers if headers is not None else self.update_headers()
         data = json.dumps(data)
@@ -603,7 +612,7 @@ class RoleClient(Requests):
         url = f'{self.endpoint}/v2/vectordb/roles/create'
         response = self.post(url, headers=self.update_headers(), data=payload)
         res = response.json()
-        if res["code"] == 200:
+        if res["code"] == 0:
             self.role_names.append(payload["roleName"])
         return res
 

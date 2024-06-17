@@ -472,8 +472,14 @@ type MQConfig struct {
 	PursuitLag        ParamItem `refreshable:"true"`
 	PursuitBufferSize ParamItem `refreshable:"true"`
 
-	MQBufSize      ParamItem `refreshable:"false"`
-	ReceiveBufSize ParamItem `refreshable:"false"`
+	MQBufSize         ParamItem `refreshable:"false"`
+	ReceiveBufSize    ParamItem `refreshable:"false"`
+	IgnoreBadPosition ParamItem `refreshable:"true"`
+
+	// msgdispatcher
+	MergeCheckInterval ParamItem `refreshable:"false"`
+	TargetBufSize      ParamItem `refreshable:"false"`
+	MaxTolerantLag     ParamItem `refreshable:"true"`
 }
 
 // Init initializes the MQConfig object with a BaseTable.
@@ -487,6 +493,33 @@ Valid values: [default, pulsar, kafka, rocksmq, natsmq]`,
 		Export: true,
 	}
 	p.Type.Init(base.mgr)
+
+	p.MaxTolerantLag = ParamItem{
+		Key:          "mq.dispatcher.maxTolerantLag",
+		Version:      "2.4.4",
+		DefaultValue: "3",
+		Doc:          `Default value: "3", the timeout(in seconds) that target sends msgPack`,
+		Export:       true,
+	}
+	p.MaxTolerantLag.Init(base.mgr)
+
+	p.TargetBufSize = ParamItem{
+		Key:          "mq.dispatcher.targetBufSize",
+		Version:      "2.4.4",
+		DefaultValue: "16",
+		Doc:          `the lenth of channel buffer for targe`,
+		Export:       true,
+	}
+	p.TargetBufSize.Init(base.mgr)
+
+	p.MergeCheckInterval = ParamItem{
+		Key:          "mq.dispatcher.mergeCheckInterval",
+		Version:      "2.4.4",
+		DefaultValue: "1",
+		Doc:          `the interval time(in seconds) for dispatcher to check whether to merge`,
+		Export:       true,
+	}
+	p.MergeCheckInterval.Init(base.mgr)
 
 	p.EnablePursuitMode = ParamItem{
 		Key:          "mq.enablePursuitMode",
@@ -531,6 +564,14 @@ Valid values: [default, pulsar, kafka, rocksmq, natsmq]`,
 		Doc:          "MQ consumer chan buffer length",
 	}
 	p.ReceiveBufSize.Init(base.mgr)
+
+	p.IgnoreBadPosition = ParamItem{
+		Key:          "mq.ignoreBadPosition",
+		Version:      "2.3.16",
+		DefaultValue: "false",
+		Doc:          "A switch for ignoring message queue failing to parse message ID from checkpoint position. Usually caused by switching among different mq implementations. May caused data loss when used by mistake",
+	}
+	p.IgnoreBadPosition.Init(base.mgr)
 }
 
 // /////////////////////////////////////////////////////////////////////////////

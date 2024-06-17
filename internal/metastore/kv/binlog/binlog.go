@@ -63,18 +63,12 @@ func CompressCompactionBinlogs(binlogs []*datapb.CompactionSegment) error {
 	return nil
 }
 
-func CompressBinLogs(s *datapb.SegmentInfo) error {
-	err := CompressFieldBinlogs(s.GetBinlogs())
-	if err != nil {
-		return err
-	}
-	err = CompressFieldBinlogs(s.GetDeltalogs())
-	if err != nil {
-		return err
-	}
-	err = CompressFieldBinlogs(s.GetStatslogs())
-	if err != nil {
-		return err
+func CompressBinLogs(binlogs ...[]*datapb.FieldBinlog) error {
+	for _, l := range binlogs {
+		err := CompressFieldBinlogs(l)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -148,7 +142,7 @@ func DecompressBinLog(binlogType storage.BinlogType, collectionID, partitionID,
 	for _, fieldBinlog := range fieldBinlogs {
 		for _, binlog := range fieldBinlog.Binlogs {
 			if binlog.GetLogPath() == "" {
-				path, err := buildLogPath(binlogType, collectionID, partitionID,
+				path, err := BuildLogPath(binlogType, collectionID, partitionID,
 					segmentID, fieldBinlog.GetFieldID(), binlog.GetLogID())
 				if err != nil {
 					return err
@@ -161,7 +155,7 @@ func DecompressBinLog(binlogType storage.BinlogType, collectionID, partitionID,
 }
 
 // build a binlog path on the storage by metadata
-func buildLogPath(binlogType storage.BinlogType, collectionID, partitionID, segmentID, fieldID, logID typeutil.UniqueID) (string, error) {
+func BuildLogPath(binlogType storage.BinlogType, collectionID, partitionID, segmentID, fieldID, logID typeutil.UniqueID) (string, error) {
 	chunkManagerRootPath := paramtable.Get().MinioCfg.RootPath.GetValue()
 	if paramtable.Get().CommonCfg.StorageType.GetValue() == "local" {
 		chunkManagerRootPath = paramtable.Get().LocalStorageCfg.Path.GetValue()

@@ -21,7 +21,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus/pkg/util/typeutil"
 )
 
@@ -140,7 +139,6 @@ var (
 			collectionIDLabelName,
 			segmentIDLabelName,
 		})
-
 	DataCoordSegmentBinLogFileCount = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: milvusNamespace,
@@ -148,6 +146,18 @@ var (
 			Name:      "segment_binlog_file_count",
 			Help:      "number of binlog files for each segment",
 		}, []string{
+			collectionIDLabelName,
+			segmentIDLabelName,
+		})
+
+	DataCoordStoredIndexFilesSize = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.DataCoordRole,
+			Name:      "stored_index_files_size",
+			Help:      "index files size of the segments",
+		}, []string{
+			databaseLabelName,
 			collectionIDLabelName,
 			segmentIDLabelName,
 		})
@@ -181,6 +191,19 @@ var (
 			nodeIDLabelName,
 			compactionTypeLabelName,
 			statusLabelName,
+		})
+
+	DataCoordCompactionLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.DataCoordRole,
+			Name:      "compaction_latency",
+			Help:      "latency of compaction operation",
+			Buckets:   longTaskBuckets,
+		}, []string{
+			isVectorFieldLabelName,
+			compactionTypeLabelName,
+			stageLabelName,
 		})
 
 	FlushedSegmentFileNum = prometheus.NewHistogramVec(
@@ -295,10 +318,12 @@ func RegisterDataCoord(registry *prometheus.Registry) {
 	registry.MustRegister(DataCoordConsumeDataNodeTimeTickLag)
 	registry.MustRegister(DataCoordCheckpointUnixSeconds)
 	registry.MustRegister(DataCoordStoredBinlogSize)
+	registry.MustRegister(DataCoordStoredIndexFilesSize)
 	registry.MustRegister(DataCoordSegmentBinLogFileCount)
 	registry.MustRegister(DataCoordDmlChannelNum)
 	registry.MustRegister(DataCoordCompactedSegmentSize)
 	registry.MustRegister(DataCoordCompactionTaskNum)
+	registry.MustRegister(DataCoordCompactionLatency)
 	registry.MustRegister(DataCoordSizeStoredL0Segment)
 	registry.MustRegister(DataCoordRateStoredL0Segment)
 	registry.MustRegister(FlushedSegmentFileNum)
@@ -310,7 +335,7 @@ func RegisterDataCoord(registry *prometheus.Registry) {
 	registry.MustRegister(GarbageCollectorRunCount)
 }
 
-func CleanupDataCoordSegmentMetrics(collectionID int64, segmentID int64) {
+func CleanupDataCoordSegmentMetrics(dbName string, collectionID int64, segmentID int64) {
 	DataCoordSegmentBinLogFileCount.
 		Delete(
 			prometheus.Labels{
@@ -318,22 +343,37 @@ func CleanupDataCoordSegmentMetrics(collectionID int64, segmentID int64) {
 				segmentIDLabelName:    fmt.Sprint(segmentID),
 			})
 	DataCoordStoredBinlogSize.Delete(prometheus.Labels{
+		databaseLabelName:     dbName,
+		collectionIDLabelName: fmt.Sprint(collectionID),
+		segmentIDLabelName:    fmt.Sprint(segmentID),
+	})
+	DataCoordStoredIndexFilesSize.Delete(prometheus.Labels{
+		databaseLabelName:     dbName,
 		collectionIDLabelName: fmt.Sprint(collectionID),
 		segmentIDLabelName:    fmt.Sprint(segmentID),
 	})
 }
 
-func CleanupDataCoordNumStoredRows(collectionID int64) {
-	for _, state := range commonpb.SegmentState_name {
-		DataCoordNumStoredRows.DeletePartialMatch(prometheus.Labels{
-			collectionIDLabelName: fmt.Sprint(collectionID),
-			segmentStateLabelName: fmt.Sprint(state),
-		})
-	}
-}
-
-func CleanupDataCoordBulkInsertVectors(collectionID int64) {
+func CleanupDataCoordWithCollectionID(collectionID int64) {
+	IndexTaskNum.DeletePartialMatch(prometheus.Labels{
+		collectionIDLabelName: fmt.Sprint(collectionID),
+	})
+	DataCoordNumStoredRows.DeletePartialMatch(prometheus.Labels{
+		collectionIDLabelName: fmt.Sprint(collectionID),
+	})
 	DataCoordBulkVectors.DeletePartialMatch(prometheus.Labels{
+		collectionIDLabelName: fmt.Sprint(collectionID),
+	})
+	DataCoordSegmentBinLogFileCount.DeletePartialMatch(prometheus.Labels{
+		collectionIDLabelName: fmt.Sprint(collectionID),
+	})
+	DataCoordStoredBinlogSize.DeletePartialMatch(prometheus.Labels{
+		collectionIDLabelName: fmt.Sprint(collectionID),
+	})
+	DataCoordStoredIndexFilesSize.DeletePartialMatch(prometheus.Labels{
+		collectionIDLabelName: fmt.Sprint(collectionID),
+	})
+	DataCoordSizeStoredL0Segment.Delete(prometheus.Labels{
 		collectionIDLabelName: fmt.Sprint(collectionID),
 	})
 }

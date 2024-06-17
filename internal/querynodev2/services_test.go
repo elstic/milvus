@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"io"
 	"math/rand"
+	"path"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -52,6 +54,7 @@ import (
 	"github.com/milvus-io/milvus/pkg/util/etcd"
 	"github.com/milvus-io/milvus/pkg/util/funcutil"
 	"github.com/milvus-io/milvus/pkg/util/merr"
+	"github.com/milvus-io/milvus/pkg/util/metautil"
 	"github.com/milvus-io/milvus/pkg/util/metricsinfo"
 	"github.com/milvus-io/milvus/pkg/util/paramtable"
 	"github.com/milvus-io/milvus/pkg/util/typeutil"
@@ -72,6 +75,8 @@ type ServiceSuite struct {
 	// Test channel
 	vchannel string
 	pchannel string
+	channel  metautil.Channel
+	mapper   metautil.ChannelMapper
 	position *msgpb.MsgPosition
 
 	// Dependency
@@ -100,9 +105,14 @@ func (suite *ServiceSuite) SetupSuite() {
 	suite.flushedSegmentIDs = []int64{4, 5, 6}
 	suite.droppedSegmentIDs = []int64{7, 8, 9}
 
+	var err error
+	suite.mapper = metautil.NewDynChannelMapper()
 	// channel data
-	suite.vchannel = "test-channel"
+	suite.vchannel = "by-dev-rootcoord-dml_0_111v0"
 	suite.pchannel = funcutil.ToPhysicalChannel(suite.vchannel)
+	suite.channel, err = metautil.ParseChannel(suite.vchannel, suite.mapper)
+	suite.Require().NoError(err)
+
 	suite.position = &msgpb.MsgPosition{
 		ChannelName: suite.vchannel,
 		MsgID:       []byte{0, 0, 0, 0, 0, 0, 0, 0},
@@ -160,7 +170,6 @@ func (suite *ServiceSuite) TearDownTest() {
 	suite.NoError(err)
 	suite.Equal(commonpb.ErrorCode_Success, resp.ErrorCode)
 	suite.node.chunkManager.RemoveWithPrefix(ctx, suite.rootPath)
-
 	suite.node.Stop()
 	suite.etcdClient.Close()
 }
@@ -299,7 +308,7 @@ func (suite *ServiceSuite) TestWatchDmChannelsInt64() {
 	// mocks
 	suite.factory.EXPECT().NewTtMsgStream(mock.Anything).Return(suite.msgStream, nil)
 	suite.msgStream.EXPECT().AsConsumer(mock.Anything, []string{suite.pchannel}, mock.Anything, mock.Anything).Return(nil)
-	suite.msgStream.EXPECT().Seek(mock.Anything, mock.Anything).Return(nil)
+	suite.msgStream.EXPECT().Seek(mock.Anything, mock.Anything, mock.Anything).Return(nil)
 	suite.msgStream.EXPECT().Chan().Return(suite.msgChan)
 	suite.msgStream.EXPECT().Close()
 
@@ -351,7 +360,7 @@ func (suite *ServiceSuite) TestWatchDmChannelsVarchar() {
 	// mocks
 	suite.factory.EXPECT().NewTtMsgStream(mock.Anything).Return(suite.msgStream, nil)
 	suite.msgStream.EXPECT().AsConsumer(mock.Anything, []string{suite.pchannel}, mock.Anything, mock.Anything).Return(nil)
-	suite.msgStream.EXPECT().Seek(mock.Anything, mock.Anything).Return(nil)
+	suite.msgStream.EXPECT().Seek(mock.Anything, mock.Anything, mock.Anything).Return(nil)
 	suite.msgStream.EXPECT().Chan().Return(suite.msgChan)
 	suite.msgStream.EXPECT().Close()
 
@@ -425,7 +434,7 @@ func (suite *ServiceSuite) TestWatchDmChannels_Failed() {
 	suite.factory.EXPECT().NewTtMsgStream(mock.Anything).Return(suite.msgStream, nil)
 	suite.msgStream.EXPECT().AsConsumer(mock.Anything, []string{suite.pchannel}, mock.Anything, mock.Anything).Return(nil)
 	suite.msgStream.EXPECT().Close().Return()
-	suite.msgStream.EXPECT().Seek(mock.Anything, mock.Anything).Return(errors.New("mock error")).Once()
+	suite.msgStream.EXPECT().Seek(mock.Anything, mock.Anything, mock.Anything).Return(errors.New("mock error")).Once()
 
 	status, err = suite.node.WatchDmChannels(ctx, req)
 	suite.NoError(err)
@@ -473,10 +482,10 @@ func (suite *ServiceSuite) TestUnsubDmChannels_Normal() {
 	l0Segment.EXPECT().Level().Return(datapb.SegmentLevel_L0)
 	l0Segment.EXPECT().Type().Return(commonpb.SegmentState_Sealed)
 	l0Segment.EXPECT().Indexes().Return(nil)
-	l0Segment.EXPECT().Shard().Return(suite.vchannel)
-	l0Segment.EXPECT().Release().Return()
+	l0Segment.EXPECT().Shard().Return(suite.channel)
+	l0Segment.EXPECT().Release(ctx).Return()
 
-	suite.node.manager.Segment.Put(segments.SegmentTypeSealed, l0Segment)
+	suite.node.manager.Segment.Put(ctx, segments.SegmentTypeSealed, l0Segment)
 
 	// data
 	req := &querypb.UnsubDmChannelRequest{
@@ -1364,6 +1373,48 @@ func (suite *ServiceSuite) TestSearchSegments_Normal() {
 	suite.Equal(commonpb.ErrorCode_Success, rsp.GetStatus().GetErrorCode())
 }
 
+func (suite *ServiceSuite) TestStreamingSearch() {
+	ctx := context.Background()
+	// pre
+	suite.TestWatchDmChannelsInt64()
+	suite.TestLoadSegments_Int64()
+	paramtable.Get().Save(paramtable.Get().QueryNodeCfg.UseStreamComputing.Key, "true")
+	creq, err := suite.genCSearchRequest(10, schemapb.DataType_FloatVector, 107, defaultMetricType)
+	req := &querypb.SearchRequest{
+		Req:             creq,
+		FromShardLeader: true,
+		DmlChannels:     []string{suite.vchannel},
+		TotalChannelNum: 2,
+		SegmentIDs:      suite.validSegmentIDs,
+		Scope:           querypb.DataScope_Historical,
+	}
+	suite.NoError(err)
+
+	rsp, err := suite.node.SearchSegments(ctx, req)
+	suite.NoError(err)
+	suite.Equal(commonpb.ErrorCode_Success, rsp.GetStatus().GetErrorCode())
+}
+
+func (suite *ServiceSuite) TestStreamingSearchGrowing() {
+	ctx := context.Background()
+	// pre
+	suite.TestWatchDmChannelsInt64()
+	paramtable.Get().Save(paramtable.Get().QueryNodeCfg.UseStreamComputing.Key, "true")
+	creq, err := suite.genCSearchRequest(10, schemapb.DataType_FloatVector, 107, defaultMetricType)
+	req := &querypb.SearchRequest{
+		Req:             creq,
+		FromShardLeader: true,
+		DmlChannels:     []string{suite.vchannel},
+		TotalChannelNum: 2,
+		Scope:           querypb.DataScope_Streaming,
+	}
+	suite.NoError(err)
+
+	rsp, err := suite.node.SearchSegments(ctx, req)
+	suite.NoError(err)
+	suite.Equal(commonpb.ErrorCode_Success, rsp.GetStatus().GetErrorCode())
+}
+
 // Test Query
 func (suite *ServiceSuite) genCQueryRequest(nq int64, indexType string, schema *schemapb.CollectionSchema) (*internalpb.RetrieveRequest, error) {
 	expr, err := genSimpleRetrievePlanExpr(schema)
@@ -1849,6 +1900,61 @@ func (suite *ServiceSuite) TestSyncDistribution_Normal() {
 	suite.NoError(err)
 	suite.Equal(commonpb.ErrorCode_Success, status.GetErrorCode())
 	suite.True(versionMatch)
+}
+
+func (suite *ServiceSuite) TestSyncDistribution_UpdatePartitionStats() {
+	ctx := context.Background()
+	// prepare
+	// watch dmchannel and load some segments
+	suite.TestWatchDmChannelsInt64()
+
+	// write partitionStats file
+	partitionID := suite.partitionIDs[0]
+	newVersion := int64(100)
+	idPath := metautil.JoinIDPath(suite.collectionID, partitionID)
+	idPath = path.Join(idPath, suite.vchannel)
+	statsFilePath := path.Join(suite.node.chunkManager.RootPath(), common.PartitionStatsPath, idPath, strconv.FormatInt(newVersion, 10))
+	segStats := make(map[typeutil.UniqueID]storage.SegmentStats)
+	partitionStats := &storage.PartitionStatsSnapshot{
+		SegmentStats: segStats,
+	}
+	statsData, err := storage.SerializePartitionStatsSnapshot(partitionStats)
+	suite.NoError(err)
+	suite.node.chunkManager.Write(context.Background(), statsFilePath, statsData)
+	defer suite.node.chunkManager.Remove(context.Background(), statsFilePath)
+
+	// sync part stats
+	req := &querypb.SyncDistributionRequest{
+		Base: &commonpb.MsgBase{
+			MsgID:    rand.Int63(),
+			TargetID: suite.node.session.ServerID,
+		},
+		CollectionID: suite.collectionID,
+		Channel:      suite.vchannel,
+	}
+
+	partVersionsMap := make(map[int64]int64)
+	partVersionsMap[partitionID] = newVersion
+	updatePartStatsAction := &querypb.SyncAction{
+		Type:                   querypb.SyncType_UpdatePartitionStats,
+		PartitionStatsVersions: partVersionsMap,
+	}
+	req.Actions = []*querypb.SyncAction{updatePartStatsAction}
+	status, err := suite.node.SyncDistribution(ctx, req)
+	suite.NoError(err)
+	suite.Equal(commonpb.ErrorCode_Success, status.ErrorCode)
+
+	getReq := &querypb.GetDataDistributionRequest{
+		Base: &commonpb.MsgBase{
+			MsgID: rand.Int63(),
+		},
+	}
+	distribution, err := suite.node.GetDataDistribution(ctx, getReq)
+	suite.NoError(err)
+	suite.Equal(1, len(distribution.LeaderViews))
+	leaderView := distribution.LeaderViews[0]
+	latestPartStats := leaderView.GetPartitionStatsVersions()
+	suite.Equal(latestPartStats[partitionID], newVersion)
 }
 
 func (suite *ServiceSuite) TestSyncDistribution_ReleaseResultCheck() {

@@ -433,9 +433,13 @@ func (q *QuotaCenter) collectMetrics() error {
 			}
 		}
 
+		datacoordQuotaCollections := make([]int64, 0)
 		q.diskMu.Lock()
 		if dataCoordTopology.Cluster.Self.QuotaMetrics != nil {
 			q.dataCoordMetrics = dataCoordTopology.Cluster.Self.QuotaMetrics
+			for metricCollection := range q.dataCoordMetrics.PartitionsBinlogSize {
+				datacoordQuotaCollections = append(datacoordQuotaCollections, metricCollection)
+			}
 		}
 		q.diskMu.Unlock()
 
@@ -447,7 +451,6 @@ func (q *QuotaCenter) collectMetrics() error {
 		}
 		var rangeErr error
 		collections.Range(func(collectionID int64) bool {
-			var coll *model.Collection
 			coll, getErr := q.meta.GetCollectionByIDWithMaxTs(context.TODO(), collectionID)
 			if getErr != nil {
 				rangeErr = getErr
@@ -482,7 +485,23 @@ func (q *QuotaCenter) collectMetrics() error {
 			}
 			return true
 		})
-		return rangeErr
+		if rangeErr != nil {
+			return rangeErr
+		}
+		for _, collectionID := range datacoordQuotaCollections {
+			_, ok := q.collectionIDToDBID.Get(collectionID)
+			if ok {
+				continue
+			}
+			coll, getErr := q.meta.GetCollectionByIDWithMaxTs(context.TODO(), collectionID)
+			if getErr != nil {
+				return getErr
+			}
+			q.collectionIDToDBID.Insert(collectionID, coll.DBID)
+			q.collections.Insert(FormatCollectionKey(coll.DBID, coll.Name), collectionID)
+		}
+
+		return nil
 	})
 	// get Proxies metrics
 	group.Go(func() error {
@@ -1468,6 +1487,7 @@ func (q *QuotaCenter) sendRatesToProxy() error {
 
 // recordMetrics records metrics of quota states.
 func (q *QuotaCenter) recordMetrics() {
+	metrics.RootCoordQuotaStates.Reset()
 	dbIDs := make(map[int64]string, q.dbs.Len())
 	collectionIDs := make(map[int64]string, q.collections.Len())
 	q.dbs.Range(func(name string, id int64) bool {

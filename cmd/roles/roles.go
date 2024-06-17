@@ -31,13 +31,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus/cmd/components"
 	"github.com/milvus-io/milvus/internal/http"
 	"github.com/milvus-io/milvus/internal/http/healthz"
 	rocksmqimpl "github.com/milvus-io/milvus/internal/mq/mqimpl/rocksmq/server"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 	kvfactory "github.com/milvus-io/milvus/internal/util/dependency/kv"
+	"github.com/milvus-io/milvus/internal/util/initcore"
 	internalmetrics "github.com/milvus-io/milvus/internal/util/metrics"
+	"github.com/milvus-io/milvus/pkg/config"
 	"github.com/milvus-io/milvus/pkg/log"
 	"github.com/milvus-io/milvus/pkg/metrics"
 	"github.com/milvus-io/milvus/pkg/mq/msgstream/mqwrapper/nmq"
@@ -252,11 +255,11 @@ func (mr *MilvusRoles) setupLogger() {
 func setupPrometheusHTTPServer(r *internalmetrics.MilvusRegistry) {
 	log.Info("setupPrometheusHTTPServer")
 	http.Register(&http.Handler{
-		Path:    "/metrics",
+		Path:    http.MetricsPath,
 		Handler: promhttp.HandlerFor(r, promhttp.HandlerOpts{}),
 	})
 	http.Register(&http.Handler{
-		Path:    "/metrics_default",
+		Path:    http.MetricsDefaultPath,
 		Handler: promhttp.Handler(),
 	})
 }
@@ -355,43 +358,97 @@ func (mr *MilvusRoles) Run() {
 	var wg sync.WaitGroup
 	local := mr.Local
 
+	componentMap := make(map[string]component)
 	var rootCoord, queryCoord, indexCoord, dataCoord component
 	var proxy, dataNode, indexNode, queryNode component
 	if mr.EnableRootCoord {
 		rootCoord = mr.runRootCoord(ctx, local, &wg)
+		componentMap[typeutil.RootCoordRole] = rootCoord
 	}
 
 	if mr.EnableDataCoord {
 		dataCoord = mr.runDataCoord(ctx, local, &wg)
+		componentMap[typeutil.DataCoordRole] = dataCoord
 	}
 
 	if mr.EnableIndexCoord {
 		indexCoord = mr.runIndexCoord(ctx, local, &wg)
+		componentMap[typeutil.IndexCoordRole] = indexCoord
 	}
 
 	if mr.EnableQueryCoord {
 		queryCoord = mr.runQueryCoord(ctx, local, &wg)
+		componentMap[typeutil.QueryCoordRole] = queryCoord
 	}
 
 	if mr.EnableQueryNode {
 		queryNode = mr.runQueryNode(ctx, local, &wg)
+		componentMap[typeutil.QueryNodeRole] = queryNode
 	}
 
 	if mr.EnableDataNode {
 		dataNode = mr.runDataNode(ctx, local, &wg)
+		componentMap[typeutil.DataNodeRole] = dataNode
 	}
 	if mr.EnableIndexNode {
 		indexNode = mr.runIndexNode(ctx, local, &wg)
+		componentMap[typeutil.IndexNodeRole] = indexNode
 	}
 
 	if mr.EnableProxy {
 		proxy = mr.runProxy(ctx, local, &wg)
+		componentMap[typeutil.ProxyRole] = proxy
 	}
 
 	wg.Wait()
 
+	http.RegisterStopComponent(func(role string) error {
+		if len(role) == 0 || componentMap[role] == nil {
+			return fmt.Errorf("stop component [%s] in [%s] is not supported", role, mr.ServerType)
+		}
+		return componentMap[role].Stop()
+	})
+
+	http.RegisterCheckComponentReady(func(role string) error {
+		if len(role) == 0 || componentMap[role] == nil {
+			return fmt.Errorf("check component state for [%s] in [%s] is not supported", role, mr.ServerType)
+		}
+
+		// for coord component, if it's in standby state, it will return StateCode_StandBy
+		code := componentMap[role].Health(context.TODO())
+		if code != commonpb.StateCode_Healthy {
+			return fmt.Errorf("component [%s] in [%s] is not healthy", role, mr.ServerType)
+		}
+
+		return nil
+	})
+
 	mr.setupLogger()
 	tracer.Init()
+	paramtable.Get().WatchKeyPrefix("trace", config.NewHandler("tracing handler", func(e *config.Event) {
+		params := paramtable.Get()
+
+		exp, err := tracer.CreateTracerExporter(params)
+		if err != nil {
+			log.Warn("Init tracer faield", zap.Error(err))
+			return
+		}
+
+		// close old provider
+		err = tracer.CloseTracerProvider(context.Background())
+		if err != nil {
+			log.Warn("Close old provider failed, stop reset", zap.Error(err))
+			return
+		}
+
+		tracer.SetTracerProvider(exp, params.TraceCfg.SampleFraction.GetAsFloat())
+		log.Info("Reset tracer finished", zap.String("Exporter", params.TraceCfg.Exporter.GetValue()), zap.Float64("SampleFraction", params.TraceCfg.SampleFraction.GetAsFloat()))
+
+		if paramtable.GetRole() == typeutil.QueryNodeRole || paramtable.GetRole() == typeutil.StandaloneRole {
+			initcore.InitTraceConfig(params)
+			log.Info("Reset segcore tracer finished", zap.String("Exporter", params.TraceCfg.Exporter.GetValue()))
+		}
+	}))
 
 	paramtable.SetCreateTime(time.Now())
 	paramtable.SetUpdateTime(time.Now())

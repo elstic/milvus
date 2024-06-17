@@ -26,10 +26,6 @@ import (
 	"github.com/milvus-io/milvus/pkg/util/typeutil"
 )
 
-const (
-	maxTxnNum = 64
-)
-
 // prefix/collection/collection_id 					-> CollectionInfo
 // prefix/partitions/collection_id/partition_id		-> PartitionInfo
 // prefix/aliases/alias_name						-> AliasInfo
@@ -86,18 +82,20 @@ func BuildAliasPrefixWithDB(dbID int64) string {
 	return fmt.Sprintf("%s/%s/%d", DatabaseMetaPrefix, Aliases, dbID)
 }
 
-func batchMultiSaveAndRemoveWithPrefix(snapshot kv.SnapShotKV, maxTxnNum int, saves map[string]string, removals []string, ts typeutil.Timestamp) error {
+// since SnapshotKV may save both snapshot key and the original key if the original key is newest
+// MaxEtcdTxnNum need to divided by 2
+func batchMultiSaveAndRemove(snapshot kv.SnapShotKV, limit int, saves map[string]string, removals []string, ts typeutil.Timestamp) error {
 	saveFn := func(partialKvs map[string]string) error {
 		return snapshot.MultiSave(partialKvs, ts)
 	}
-	if err := etcd.SaveByBatchWithLimit(saves, maxTxnNum, saveFn); err != nil {
+	if err := etcd.SaveByBatchWithLimit(saves, limit, saveFn); err != nil {
 		return err
 	}
 
 	removeFn := func(partialKeys []string) error {
-		return snapshot.MultiSaveAndRemoveWithPrefix(nil, partialKeys, ts)
+		return snapshot.MultiSaveAndRemove(nil, partialKeys, ts)
 	}
-	return etcd.RemoveByBatchWithLimit(removals, maxTxnNum, removeFn)
+	return etcd.RemoveByBatchWithLimit(removals, limit, removeFn)
 }
 
 func (kc *Catalog) CreateDatabase(ctx context.Context, db *model.Database, ts typeutil.Timestamp) error {
@@ -122,7 +120,7 @@ func (kc *Catalog) AlterDatabase(ctx context.Context, newColl *model.Database, t
 
 func (kc *Catalog) DropDatabase(ctx context.Context, dbID int64, ts typeutil.Timestamp) error {
 	key := BuildDatabaseKey(dbID)
-	return kc.Snapshot.MultiSaveAndRemoveWithPrefix(nil, []string{key}, ts)
+	return kc.Snapshot.MultiSaveAndRemove(nil, []string{key}, ts)
 }
 
 func (kc *Catalog) ListDatabases(ctx context.Context, ts typeutil.Timestamp) ([]*model.Database, error) {
@@ -193,7 +191,9 @@ func (kc *Catalog) CreateCollection(ctx context.Context, coll *model.Collection,
 
 	// Though batchSave is not atomic enough, we can promise the atomicity outside.
 	// Recovering from failure, if we found collection is creating, we should remove all these related meta.
-	return etcd.SaveByBatchWithLimit(kvs, maxTxnNum/2, func(partialKvs map[string]string) error {
+	// since SnapshotKV may save both snapshot key and the original key if the original key is newest
+	// MaxEtcdTxnNum need to divided by 2
+	return etcd.SaveByBatchWithLimit(kvs, util.MaxEtcdTxnNum/2, func(partialKvs map[string]string) error {
 		return kc.Snapshot.MultiSave(partialKvs, ts)
 	})
 }
@@ -224,7 +224,7 @@ func (kc *Catalog) loadCollection(ctx context.Context, dbID int64, collectionID 
 		if err != nil {
 			return nil, err
 		}
-		fixDefaultDBIDConsistency(info)
+		kc.fixDefaultDBIDConsistency(ctx, info, ts)
 		return info, nil
 	}
 	return kc.loadCollectionFromDb(ctx, dbID, collectionID, ts)
@@ -293,7 +293,7 @@ func (kc *Catalog) CreateAlias(ctx context.Context, alias *model.Alias, ts typeu
 		return err
 	}
 	kvs := map[string]string{k: string(v)}
-	return kc.Snapshot.MultiSaveAndRemoveWithPrefix(kvs, []string{oldKBefore210, oldKeyWithoutDb}, ts)
+	return kc.Snapshot.MultiSaveAndRemove(kvs, []string{oldKBefore210, oldKeyWithoutDb}, ts)
 }
 
 func (kc *Catalog) CreateCredential(ctx context.Context, credential *model.Credential) error {
@@ -446,14 +446,14 @@ func (kc *Catalog) DropCollection(ctx context.Context, collectionInfo *model.Col
 	// Though batchMultiSaveAndRemoveWithPrefix is not atomic enough, we can promise atomicity outside.
 	// If we found collection under dropping state, we'll know that gc is not completely on this collection.
 	// However, if we remove collection first, we cannot remove other metas.
-	// We set maxTxnNum to 64, since SnapshotKV may save both snapshot key and the original key if the original key is
-	// newest.
-	if err := batchMultiSaveAndRemoveWithPrefix(kc.Snapshot, maxTxnNum, nil, delMetakeysSnap, ts); err != nil {
+	// since SnapshotKV may save both snapshot key and the original key if the original key is newest
+	// MaxEtcdTxnNum need to divided by 2
+	if err := batchMultiSaveAndRemove(kc.Snapshot, util.MaxEtcdTxnNum/2, nil, delMetakeysSnap, ts); err != nil {
 		return err
 	}
 
 	// if we found collection dropping, we should try removing related resources.
-	return kc.Snapshot.MultiSaveAndRemoveWithPrefix(nil, collectionKeys, ts)
+	return kc.Snapshot.MultiSaveAndRemove(nil, collectionKeys, ts)
 }
 
 func (kc *Catalog) alterModifyCollection(oldColl *model.Collection, newColl *model.Collection, ts typeutil.Timestamp) error {
@@ -484,7 +484,7 @@ func (kc *Catalog) alterModifyCollection(oldColl *model.Collection, newColl *mod
 	if oldKey == newKey {
 		return kc.Snapshot.Save(newKey, string(value), ts)
 	}
-	return kc.Snapshot.MultiSaveAndRemoveWithPrefix(saves, []string{oldKey}, ts)
+	return kc.Snapshot.MultiSaveAndRemove(saves, []string{oldKey}, ts)
 }
 
 func (kc *Catalog) AlterCollection(ctx context.Context, oldColl *model.Collection, newColl *model.Collection, alterType metastore.AlterType, ts typeutil.Timestamp) error {
@@ -552,7 +552,7 @@ func (kc *Catalog) DropPartition(ctx context.Context, dbID int64, collectionID t
 
 	if partitionVersionAfter210(collMeta) {
 		k := BuildPartitionKey(collectionID, partitionID)
-		return kc.Snapshot.MultiSaveAndRemoveWithPrefix(nil, []string{k}, ts)
+		return kc.Snapshot.MultiSaveAndRemove(nil, []string{k}, ts)
 	}
 
 	k := BuildCollectionKey(util.NonDBID, collectionID)
@@ -594,7 +594,7 @@ func (kc *Catalog) DropAlias(ctx context.Context, dbID int64, alias string, ts t
 	oldKBefore210 := BuildAliasKey210(alias)
 	oldKeyWithoutDb := BuildAliasKey(alias)
 	k := BuildAliasKeyWithDB(dbID, alias)
-	return kc.Snapshot.MultiSaveAndRemoveWithPrefix(nil, []string{k, oldKeyWithoutDb, oldKBefore210}, ts)
+	return kc.Snapshot.MultiSaveAndRemove(nil, []string{k, oldKeyWithoutDb, oldKBefore210}, ts)
 }
 
 func (kc *Catalog) GetCollectionByName(ctx context.Context, dbID int64, collectionName string, ts typeutil.Timestamp) (*model.Collection, error) {
@@ -640,7 +640,7 @@ func (kc *Catalog) ListCollections(ctx context.Context, dbID int64, ts typeutil.
 			log.Warn("unmarshal collection info failed", zap.Error(err))
 			continue
 		}
-		fixDefaultDBIDConsistency(&collMeta)
+		kc.fixDefaultDBIDConsistency(ctx, &collMeta, ts)
 		collection, err := kc.appendPartitionAndFieldsInfo(ctx, &collMeta, ts)
 		if err != nil {
 			return nil, err
@@ -649,6 +649,22 @@ func (kc *Catalog) ListCollections(ctx context.Context, dbID int64, ts typeutil.
 	}
 
 	return colls, nil
+}
+
+// fixDefaultDBIDConsistency fix dbID consistency for collectionInfo.
+// We have two versions of default databaseID (0 at legacy path, 1 at new path), we should keep consistent view when user use default database.
+// all collections in default database should be marked with dbID 1.
+// this method also update dbid in meta store when dbid is 0
+// see also: https://github.com/milvus-io/milvus/issues/33608
+func (kv *Catalog) fixDefaultDBIDConsistency(_ context.Context, collMeta *pb.CollectionInfo, ts typeutil.Timestamp) {
+	if collMeta.DbId == util.NonDBID {
+		coll := model.UnmarshalCollectionModel(collMeta)
+		cloned := coll.Clone()
+		cloned.DBID = util.DefaultDBID
+		kv.alterModifyCollection(coll, cloned, ts)
+
+		collMeta.DbId = util.DefaultDBID
+	}
 }
 
 func (kc *Catalog) listAliasesBefore210(ctx context.Context, ts typeutil.Timestamp) ([]*model.Alias, error) {
@@ -1203,13 +1219,4 @@ func isDefaultDB(dbID int64) bool {
 		return true
 	}
 	return false
-}
-
-// fixDefaultDBIDConsistency fix dbID consistency for collectionInfo.
-// We have two versions of default databaseID (0 at legacy path, 1 at new path), we should keep consistent view when user use default database.
-// all collections in default database should be marked with dbID 1.
-func fixDefaultDBIDConsistency(coll *pb.CollectionInfo) {
-	if isDefaultDB(coll.DbId) {
-		coll.DbId = util.DefaultDBID
-	}
 }

@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cockroachdb/errors"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -28,6 +29,7 @@ import (
 	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/kv/mocks"
+	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/pkg/util/testutils"
 )
 
@@ -67,8 +69,8 @@ func (suite *ClusterSuite) TestStartup() {
 		{NodeID: 4, Address: "addr4"},
 	}
 	suite.mockSession.EXPECT().AddSession(mock.Anything).Return().Times(len(nodes))
-	suite.mockChManager.EXPECT().Startup(mock.Anything, mock.Anything).
-		RunAndReturn(func(ctx context.Context, nodeIDs []int64) error {
+	suite.mockChManager.EXPECT().Startup(mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(ctx context.Context, legacys []int64, nodeIDs []int64) error {
 			suite.ElementsMatch(lo.Map(nodes, func(info *NodeInfo, _ int) int64 { return info.NodeID }), nodeIDs)
 			return nil
 		}).Once()
@@ -122,17 +124,19 @@ func (suite *ClusterSuite) TestWatch() {
 		}).Once()
 
 	cluster := NewClusterImpl(suite.mockSession, suite.mockChManager)
-	err := cluster.Watch(context.Background(), ch, collectionID)
+	err := cluster.Watch(context.Background(), getChannel(ch, collectionID))
 	suite.NoError(err)
 }
 
 func (suite *ClusterSuite) TestFlush() {
-	suite.mockChManager.EXPECT().Match(mock.Anything, mock.Anything).
-		RunAndReturn(func(nodeID int64, channel string) bool {
-			return nodeID != 1
+	suite.mockChManager.EXPECT().GetChannel(mock.Anything, mock.Anything).
+		RunAndReturn(func(nodeID int64, channel string) (RWChannel, bool) {
+			if nodeID == 1 {
+				return nil, false
+			}
+			return getChannel("ch-1", 2), true
 		}).Twice()
 
-	suite.mockChManager.EXPECT().GetCollectionIDByChannel(mock.Anything).Return(true, 100).Once()
 	suite.mockSession.EXPECT().Flush(mock.Anything, mock.Anything, mock.Anything).Once()
 
 	cluster := NewClusterImpl(suite.mockSession, suite.mockChManager)
@@ -171,5 +175,31 @@ func (suite *ClusterSuite) TestFlushChannels() {
 		cluster := NewClusterImpl(suite.mockSession, suite.mockChManager)
 		err := cluster.FlushChannels(context.Background(), 1, 0, channels)
 		suite.NoError(err)
+	})
+}
+
+func (suite *ClusterSuite) TestQuerySlot() {
+	suite.Run("query slot failed", func() {
+		suite.SetupTest()
+		suite.mockSession.EXPECT().GetSessionIDs().Return([]int64{1}).Once()
+		suite.mockSession.EXPECT().QuerySlot(int64(1)).Return(nil, errors.New("mock err")).Once()
+		cluster := NewClusterImpl(suite.mockSession, suite.mockChManager)
+		nodeSlots := cluster.QuerySlots()
+		suite.Equal(0, len(nodeSlots))
+	})
+
+	suite.Run("normal", func() {
+		suite.SetupTest()
+		suite.mockSession.EXPECT().GetSessionIDs().Return([]int64{1, 2, 3, 4}).Once()
+		suite.mockSession.EXPECT().QuerySlot(int64(1)).Return(&datapb.QuerySlotResponse{NumSlots: 1}, nil).Once()
+		suite.mockSession.EXPECT().QuerySlot(int64(2)).Return(&datapb.QuerySlotResponse{NumSlots: 2}, nil).Once()
+		suite.mockSession.EXPECT().QuerySlot(int64(3)).Return(&datapb.QuerySlotResponse{NumSlots: 3}, nil).Once()
+		suite.mockSession.EXPECT().QuerySlot(int64(4)).Return(&datapb.QuerySlotResponse{NumSlots: 4}, nil).Once()
+		cluster := NewClusterImpl(suite.mockSession, suite.mockChManager)
+		nodeSlots := cluster.QuerySlots()
+		suite.Equal(int64(1), nodeSlots[1])
+		suite.Equal(int64(2), nodeSlots[2])
+		suite.Equal(int64(3), nodeSlots[3])
+		suite.Equal(int64(4), nodeSlots[4])
 	})
 }

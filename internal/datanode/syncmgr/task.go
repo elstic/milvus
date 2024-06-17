@@ -109,7 +109,7 @@ func (t *SyncTask) getLogger() *log.MLogger {
 	)
 }
 
-func (t *SyncTask) handleError(err error) {
+func (t *SyncTask) HandleError(err error) {
 	if errors.Is(err, errTargetSegmentNotMatch) {
 		return
 	}
@@ -129,16 +129,19 @@ func (t *SyncTask) Run() (err error) {
 	log := t.getLogger()
 	defer func() {
 		if err != nil {
-			t.handleError(err)
+			t.HandleError(err)
 		}
 	}()
 
 	var has bool
 	t.segment, has = t.metacache.GetSegmentByID(t.segmentID)
 	if !has {
+		if t.isDrop {
+			log.Info("segment dropped, discard sync task")
+			return nil
+		}
 		log.Warn("failed to sync data, segment not found in metacache")
 		err := merr.WrapErrSegmentNotFound(t.segmentID)
-		t.handleError(err)
 		return err
 	}
 
@@ -175,7 +178,6 @@ func (t *SyncTask) Run() (err error) {
 	err = t.writeLogs()
 	if err != nil {
 		log.Warn("failed to save serialized data into storage", zap.Error(err))
-		t.handleError(err)
 		return err
 	}
 
@@ -195,20 +197,19 @@ func (t *SyncTask) Run() (err error) {
 		err = t.writeMeta()
 		if err != nil {
 			log.Warn("failed to save serialized data into storage", zap.Error(err))
-			t.handleError(err)
 			return err
 		}
 	}
 
 	actions := []metacache.SegmentAction{metacache.FinishSyncing(t.batchSize)}
-	switch {
-	case t.isDrop:
-		actions = append(actions, metacache.UpdateState(commonpb.SegmentState_Dropped))
-	case t.isFlush:
+	if t.isFlush {
 		actions = append(actions, metacache.UpdateState(commonpb.SegmentState_Flushed))
 	}
-
 	t.metacache.UpdateSegments(metacache.MergeSegmentAction(actions...), metacache.WithSegmentIDs(t.segment.SegmentID()))
+
+	if t.isDrop {
+		t.metacache.RemoveSegments(metacache.WithSegmentIDs(t.segment.SegmentID()))
+	}
 
 	log.Info("task done", zap.Float64("flushedSize", totalSize))
 
@@ -262,7 +263,8 @@ func (t *SyncTask) processInsertBlobs() {
 			TimestampFrom: t.tsFrom,
 			TimestampTo:   t.tsTo,
 			LogPath:       key,
-			LogSize:       t.binlogMemsize[fieldID],
+			LogSize:       int64(len(blob.GetValue())),
+			MemorySize:    t.binlogMemsize[fieldID],
 		})
 	}
 }
@@ -291,6 +293,7 @@ func (t *SyncTask) processDeltaBlob() {
 		data.TimestampFrom = t.tsFrom
 		data.TimestampTo = t.tsTo
 		data.EntriesNum = t.deltaRowCount
+		data.MemorySize = t.deltaBlob.GetMemorySize()
 		t.appendDeltalog(data)
 	}
 }
@@ -307,6 +310,7 @@ func (t *SyncTask) convertBlob2StatsBinlog(blob *storage.Blob, fieldID, logID in
 		TimestampTo:   t.tsTo,
 		LogPath:       key,
 		LogSize:       int64(len(value)),
+		MemorySize:    int64(len(value)),
 	})
 }
 

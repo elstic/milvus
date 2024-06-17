@@ -17,7 +17,7 @@ max_limit = 16384
 max_top_k = 16384
 max_partition_num = 4096
 max_role_num = 10
-default_partition_num = 64   # default num_partitions for partition key feature
+default_partition_num = 16   # default num_partitions for partition key feature
 default_segment_row_limit = 1000
 default_server_segment_row_limit = 1024 * 512
 default_alias = "default"
@@ -105,36 +105,27 @@ default_count_output = "count(*)"
 rows_all_data_type_file_path = "/tmp/rows_all_data_type"
 
 """" List of parameters used to pass """
-get_invalid_strs = [
-    [],
-    1,
-    [1, "2", 3],
-    (1,),
-    {1: 1},
-    None,
-    "",
-    " ",
-    "12-s",
-    "12 s",
-    "(mn)",
-    "中文",
-    "%$#",
-    "".join("a" for i in range(max_name_length + 1))]
+invalid_resource_names = [
+    None,               # None
+    " ",                # space
+    "",                 # empty
+    "12name",           # start with number
+    "n12 ame",          # contain space
+    "n-ame",            # contain hyphen
+    "nam(e)",           # contain special character
+    "name中文",          # contain Chinese character
+    "name%$#",          # contain special character
+    "".join("a" for i in range(max_name_length + 1))]           # exceed max length
 
-get_invalid_type_fields = [
-    1,
-    [1, "2", 3],
-    (1,),
-    {1: 1},
-    None,
-    "",
-    " ",
-    "12-s",
-    "12 s",
-    "(mn)",
-    "中文",
-    "%$#",
-    "".join("a" for i in range(max_name_length + 1))]
+valid_resource_names = [
+    "name",             # valid name
+    "_name",            # start with underline
+    "_12name",          # start with underline and contains number
+    "n12ame_",          # end with letter and contains number and underline
+    "nam_e",             # contains underline
+    "".join("a" for i in range(max_name_length))]       # max length
+
+invalid_dims = [min_dim-1, 32.1, -32, "vii", "十六", max_dim+1]
 
 get_not_string = [
     [],
@@ -144,16 +135,6 @@ get_not_string = [
     1,
     1.0,
     [1, "2", 3]
-]
-
-get_not_string_value = [
-    " ",
-    "12-s",
-    "12 s",
-    "(mn)",
-    "中文",
-    "%$#",
-    "a".join("a" for i in range(256))
 ]
 
 get_invalid_vectors = [
@@ -271,11 +252,11 @@ default_bin_flat_index = {"index_type": "BIN_FLAT", "params": {}, "metric_type":
 default_sparse_inverted_index = {"index_type": "SPARSE_INVERTED_INDEX", "metric_type": "IP",
                                  "params": {"drop_ratio_build": 0.2}}
 
-default_search_params = {"params": default_all_search_params_params[2]}
-default_search_ip_params = {"metric_type": "IP", "params": default_all_search_params_params[2]}
+default_search_params = {"params": default_all_search_params_params[2].copy()}
+default_search_ip_params = {"metric_type": "IP", "params": default_all_search_params_params[2].copy()}
 default_search_binary_params = {"metric_type": "JACCARD", "params": {"nprobe": 32}}
-default_index = {"index_type": "IVF_SQ8", "metric_type": default_L0_metric, "params": default_all_indexes_params[2]}
-default_binary_index = {"index_type": "BIN_IVF_FLAT", "metric_type": "JACCARD", "params": default_all_indexes_params[8]}
+default_index = {"index_type": "IVF_SQ8", "metric_type": default_L0_metric, "params": default_all_indexes_params[2].copy()}
+default_binary_index = {"index_type": "BIN_IVF_FLAT", "metric_type": "JACCARD", "params": default_all_indexes_params[8].copy()}
 default_diskann_index = {"index_type": "DISKANN", "metric_type": default_L0_metric, "params": {}}
 default_diskann_search_params = {"params": {"search_list": 30}}
 default_sparse_search_params = {"metric_type": "IP", "params": {"drop_ratio_search": "0.2"}}

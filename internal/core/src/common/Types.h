@@ -57,6 +57,7 @@ using distance_t = float;
 
 using float16 = knowhere::fp16;
 using bfloat16 = knowhere::bf16;
+using bin1 = knowhere::bin1;
 
 enum class DataType {
     NONE = 0,
@@ -255,6 +256,34 @@ IsArrayDataType(DataType data_type) {
 inline bool
 IsBinaryDataType(DataType data_type) {
     return IsJsonDataType(data_type) || IsArrayDataType(data_type);
+}
+
+inline bool
+IsPrimitiveType(proto::schema::DataType type) {
+    switch (type) {
+        case proto::schema::DataType::Bool:
+        case proto::schema::DataType::Int8:
+        case proto::schema::DataType::Int16:
+        case proto::schema::DataType::Int32:
+        case proto::schema::DataType::Int64:
+        case proto::schema::DataType::Float:
+        case proto::schema::DataType::Double:
+        case proto::schema::DataType::String:
+        case proto::schema::DataType::VarChar:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool
+IsJsonType(proto::schema::DataType type) {
+    return type == proto::schema::DataType::JSON;
+}
+
+inline bool
+IsArrayType(proto::schema::DataType type) {
+    return type == proto::schema::DataType::Array;
 }
 
 inline bool

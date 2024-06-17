@@ -18,7 +18,6 @@ package io
 
 import (
 	"context"
-	"path"
 
 	"github.com/samber/lo"
 	"go.opentelemetry.io/otel"
@@ -34,8 +33,6 @@ import (
 type BinlogIO interface {
 	Download(ctx context.Context, paths []string) ([][]byte, error)
 	Upload(ctx context.Context, kvs map[string][]byte) error
-	// JoinFullPath returns the full path by join the paths with the chunkmanager's rootpath
-	JoinFullPath(paths ...string) string
 }
 
 type BinlogIoImpl struct {
@@ -43,8 +40,8 @@ type BinlogIoImpl struct {
 	pool *conc.Pool[any]
 }
 
-func NewBinlogIO(cm storage.ChunkManager, ioPool *conc.Pool[any]) BinlogIO {
-	return &BinlogIoImpl{cm, ioPool}
+func NewBinlogIO(cm storage.ChunkManager) BinlogIO {
+	return &BinlogIoImpl{cm, GetOrCreateIOPool()}
 }
 
 func (b *BinlogIoImpl) Download(ctx context.Context, paths []string) ([][]byte, error) {
@@ -85,19 +82,24 @@ func (b *BinlogIoImpl) Download(ctx context.Context, paths []string) ([][]byte, 
 func (b *BinlogIoImpl) Upload(ctx context.Context, kvs map[string][]byte) error {
 	ctx, span := otel.Tracer(typeutil.DataNodeRole).Start(ctx, "Upload")
 	defer span.End()
-	future := b.pool.Submit(func() (any, error) {
-		log.Debug("BinlogIO uplaod", zap.Strings("paths", lo.Keys(kvs)))
-		err := retry.Do(ctx, func() error {
-			return b.MultiWrite(ctx, kvs)
+
+	futures := make([]*conc.Future[any], 0, len(kvs))
+	for k, v := range kvs {
+		innerK, innerV := k, v
+		future := b.pool.Submit(func() (any, error) {
+			var err error
+			log.Debug("BinlogIO upload", zap.String("paths", innerK))
+			err = retry.Do(ctx, func() error {
+				err = b.Write(ctx, innerK, innerV)
+				if err != nil {
+					log.Warn("BinlogIO fail to upload", zap.String("paths", innerK), zap.Error(err))
+				}
+				return err
+			})
+			return struct{}{}, err
 		})
+		futures = append(futures, future)
+	}
 
-		return nil, err
-	})
-
-	_, err := future.Await()
-	return err
-}
-
-func (b *BinlogIoImpl) JoinFullPath(paths ...string) string {
-	return path.Join(b.ChunkManager.RootPath(), path.Join(paths...))
+	return conc.AwaitAll(futures...)
 }

@@ -1,15 +1,29 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package datacoord
 
 import (
 	"fmt"
 
 	"github.com/samber/lo"
-	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/log"
 )
 
 type CompactionView interface {
@@ -86,6 +100,9 @@ type SegmentView struct {
 	ExpireSize float64
 	DeltaSize  float64
 
+	NumOfRows int64
+	MaxRowNum int64
+
 	// file numbers
 	BinlogCount   int
 	StatslogCount int
@@ -106,6 +123,8 @@ func (s *SegmentView) Clone() *SegmentView {
 		BinlogCount:   s.BinlogCount,
 		StatslogCount: s.StatslogCount,
 		DeltalogCount: s.DeltalogCount,
+		NumOfRows:     s.NumOfRows,
+		MaxRowNum:     s.MaxRowNum,
 	}
 }
 
@@ -133,6 +152,8 @@ func GetViewsByInfo(segments ...*SegmentInfo) []*SegmentView {
 			BinlogCount:   GetBinlogCount(segment.GetBinlogs()),
 			StatslogCount: GetBinlogCount(segment.GetStatslogs()),
 
+			NumOfRows: segment.NumOfRows,
+			MaxRowNum: segment.MaxRowNum,
 			// TODO: set the following
 			// ExpireSize float64
 		}
@@ -166,29 +187,11 @@ func GetBinlogCount(fieldBinlogs []*datapb.FieldBinlog) int {
 	return num
 }
 
-func GetExpiredSizeAsBytes(expireTime Timestamp, fieldBinlogs []*datapb.FieldBinlog) float64 {
-	var expireSize float64
-	for _, binlogs := range fieldBinlogs {
-		for _, l := range binlogs.GetBinlogs() {
-			// TODO, we should probably estimate expired log entries by total rows
-			// in binlog and the ralationship of timeTo, timeFrom and expire time
-			if l.TimestampTo < expireTime {
-				log.Info("mark binlog as expired",
-					zap.Int64("binlogID", l.GetLogID()),
-					zap.Uint64("binlogTimestampTo", l.TimestampTo),
-					zap.Uint64("compactExpireTime", expireTime))
-				expireSize += float64(l.GetLogSize())
-			}
-		}
-	}
-	return expireSize
-}
-
 func GetBinlogSizeAsBytes(deltaBinlogs []*datapb.FieldBinlog) float64 {
 	var deltaSize float64
 	for _, deltaLogs := range deltaBinlogs {
 		for _, l := range deltaLogs.GetBinlogs() {
-			deltaSize += float64(l.GetLogSize())
+			deltaSize += float64(l.GetMemorySize())
 		}
 	}
 	return deltaSize

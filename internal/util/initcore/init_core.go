@@ -29,6 +29,7 @@ import "C"
 
 import (
 	"fmt"
+	"time"
 	"unsafe"
 
 	"github.com/cockroachdb/errors"
@@ -61,7 +62,57 @@ func InitTraceConfig(params *paramtable.ComponentParam) {
 		otlpEndpoint:   endpoint,
 		nodeID:         nodeID,
 	}
-	C.InitTrace(&config)
+	// oltp grpc may hangs forever, add timeout logic at go side
+	timeout := params.TraceCfg.InitTimeoutSeconds.GetAsDuration(time.Second)
+	callWithTimeout(func() {
+		C.InitTrace(&config)
+	}, func() {
+		panic("init segcore tracing timeout, See issue #33483")
+	}, timeout)
+}
+
+func ResetTraceConfig(params *paramtable.ComponentParam) {
+	sampleFraction := C.float(params.TraceCfg.SampleFraction.GetAsFloat())
+	nodeID := C.int(paramtable.GetNodeID())
+	exporter := C.CString(params.TraceCfg.Exporter.GetValue())
+	jaegerURL := C.CString(params.TraceCfg.JaegerURL.GetValue())
+	endpoint := C.CString(params.TraceCfg.OtlpEndpoint.GetValue())
+	defer C.free(unsafe.Pointer(exporter))
+	defer C.free(unsafe.Pointer(jaegerURL))
+	defer C.free(unsafe.Pointer(endpoint))
+
+	config := C.CTraceConfig{
+		exporter:       exporter,
+		sampleFraction: sampleFraction,
+		jaegerURL:      jaegerURL,
+		otlpEndpoint:   endpoint,
+		nodeID:         nodeID,
+	}
+
+	// oltp grpc may hangs forever, add timeout logic at go side
+	timeout := params.TraceCfg.InitTimeoutSeconds.GetAsDuration(time.Second)
+	callWithTimeout(func() {
+		C.SetTrace(&config)
+	}, func() {
+		panic("set segcore tracing timeout, See issue #33483")
+	}, timeout)
+}
+
+func callWithTimeout(fn func(), timeoutHandler func(), timeout time.Duration) {
+	if timeout > 0 {
+		ch := make(chan struct{})
+		go func() {
+			defer close(ch)
+			fn()
+		}()
+		select {
+		case <-ch:
+		case <-time.After(timeout):
+			timeoutHandler()
+		}
+	} else {
+		fn()
+	}
 }
 
 func InitRemoteChunkManager(params *paramtable.ComponentParam) error {

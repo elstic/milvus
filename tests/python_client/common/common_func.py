@@ -8,7 +8,7 @@ import uuid
 from functools import singledispatch
 import numpy as np
 import pandas as pd
-import jax.numpy as jnp
+from ml_dtypes import bfloat16
 from sklearn import preprocessing
 from npy_append_array import NpyAppendArray
 from faker import Faker
@@ -20,7 +20,6 @@ from common import common_type as ct
 from utils.util_log import test_log as log
 from customize.milvus_operator import MilvusOperator
 import pickle
-import tensorflow as tf
 fake = Faker()
 """" Methods of processing data """
 
@@ -899,12 +898,12 @@ def get_column_data_by_schema(nb=ct.default_nb, schema=None, skip_vectors=False,
         if field.dtype == DataType.FLOAT_VECTOR and skip_vectors is True:
             tmp = []
         else:
-            tmp = gen_data_by_type(field, nb=nb, start=start)
+            tmp = gen_data_by_collection_field(field, nb=nb, start=start)
         data.append(tmp)
     return data
 
 
-def get_row_data_by_schema(nb=ct.default_nb, schema=None):
+def gen_row_data_by_schema(nb=ct.default_nb, schema=None):
     if schema is None:
         schema = gen_default_collection_schema()
     fields = schema.fields
@@ -916,7 +915,7 @@ def get_row_data_by_schema(nb=ct.default_nb, schema=None):
     for i in range(nb):
         tmp = {}
         for field in fields_not_auto_id:
-            tmp[field.name] = gen_data_by_type(field)
+            tmp[field.name] = gen_data_by_collection_field(field)
         data.append(tmp)
     return data
 
@@ -1016,7 +1015,7 @@ def get_dim_by_schema(schema=None):
     return None
 
 
-def gen_data_by_type(field, nb=None, start=None):
+def gen_data_by_collection_field(field, nb=None, start=None):
     # if nb is None, return one data, else return a list of data
     data_type = field.dtype
     if data_type == DataType.BOOL:
@@ -1070,14 +1069,12 @@ def gen_data_by_type(field, nb=None, start=None):
         dim = field.params['dim']
         if nb is None:
             raw_vector = [random.random() for _ in range(dim)]
-            bf16_vector = jnp.array(raw_vector, dtype=jnp.bfloat16)
-            bf16_vector = np.array(bf16_vector).view(np.uint8).tolist()
+            bf16_vector = np.array(raw_vector, dtype=bfloat16).view(np.uint8).tolist()
             return bytes(bf16_vector)
         bf16_vectors = []
         for i in range(nb):
             raw_vector = [random.random() for _ in range(dim)]
-            bf16_vector = jnp.array(raw_vector, dtype=jnp.bfloat16)
-            bf16_vector = np.array(bf16_vector).view(np.uint8).tolist()
+            bf16_vector = np.array(raw_vector, dtype=bfloat16).view(np.uint8).tolist()
             bf16_vectors.append(bytes(bf16_vector))
         return bf16_vectors
     if data_type == DataType.FLOAT16_VECTOR:
@@ -1122,6 +1119,19 @@ def gen_data_by_type(field, nb=None, start=None):
             return [["".join([chr(random.randint(97, 122)) for _ in range(length)]) for _ in range(max_capacity)] for _ in range(nb)]
 
     return None
+
+
+def gen_data_by_collection_schema(schema, nb, r=0):
+    """
+    gen random data by collection schema, regardless of primary key or auto_id
+    vector type only support for DataType.FLOAT_VECTOR
+    """
+    data = []
+    start_uid = r * nb
+    fields = schema.fields
+    for field in fields:
+        data.append(gen_data_by_collection_field(field, nb, start_uid))
+    return data
 
 
 def gen_json_files_for_bulk_insert(data, schema, data_dir):
@@ -1674,12 +1684,12 @@ def index_to_dict(index):
 
 def get_index_params_params(index_type):
     """get default params of index params  by index type"""
-    return ct.default_all_indexes_params[ct.all_index_types.index(index_type)]
+    return ct.default_all_indexes_params[ct.all_index_types.index(index_type)].copy()
 
 
 def get_search_params_params(index_type):
     """get default params of search params by index type"""
-    return ct.default_all_search_params_params[ct.all_index_types.index(index_type)]
+    return ct.default_all_search_params_params[ct.all_index_types.index(index_type)].copy()
 
 
 def assert_json_contains(expr, list_data):
@@ -2064,7 +2074,7 @@ def gen_bf16_vectors(num, dim):
     for _ in range(num):
         raw_vector = [random.random() for _ in range(dim)]
         raw_vectors.append(raw_vector)
-        bf16_vector = tf.cast(raw_vector, dtype=tf.bfloat16).numpy()
+        bf16_vector = np.array(raw_vector, dtype=bfloat16)
         bf16_vectors.append(bf16_vector)
 
     return raw_vectors, bf16_vectors

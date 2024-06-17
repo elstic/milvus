@@ -31,6 +31,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/pkg/log"
 	"github.com/milvus-io/milvus/pkg/metrics"
+	"github.com/milvus-io/milvus/pkg/util/lock"
 )
 
 const (
@@ -147,7 +148,7 @@ func (s *importScheduler) peekSlots() map[int64]int64 {
 		return s.info.NodeID
 	})
 	nodeSlots := make(map[int64]int64)
-	mu := &sync.Mutex{}
+	mu := &lock.Mutex{}
 	wg := &sync.WaitGroup{}
 	for _, nodeID := range nodeIDs {
 		wg.Add(1)
@@ -303,13 +304,13 @@ func (s *importScheduler) processInProgressImport(task ImportTask) {
 	if resp.GetState() == datapb.ImportTaskStateV2_Completed {
 		for _, info := range resp.GetImportSegmentsInfo() {
 			// try to parse path and fill logID
-			err = binlog.CompressFieldBinlogs(info.GetBinlogs())
+			err = binlog.CompressBinLogs(info.GetBinlogs(), info.GetDeltalogs(), info.GetStatslogs())
 			if err != nil {
-				log.Warn("fail to CompressFieldBinlogs for import binlogs",
+				log.Warn("fail to CompressBinLogs for import binlogs",
 					WrapTaskLog(task, zap.Int64("segmentID", info.GetSegmentID()), zap.Error(err))...)
 				return
 			}
-			op1 := UpdateBinlogsOperator(info.GetSegmentID(), info.GetBinlogs(), info.GetStatslogs(), nil)
+			op1 := UpdateBinlogsOperator(info.GetSegmentID(), info.GetBinlogs(), info.GetStatslogs(), info.GetDeltalogs())
 			op2 := UpdateStatusOperator(info.GetSegmentID(), commonpb.SegmentState_Flushed)
 			err = s.meta.UpdateSegmentsInfo(op1, op2)
 			if err != nil {
@@ -350,9 +351,11 @@ func (s *importScheduler) processFailed(task ImportTask) {
 				return
 			}
 		}
-		err := s.imeta.UpdateTask(task.GetTaskID(), UpdateSegmentIDs(nil))
-		if err != nil {
-			log.Warn("update import task segments failed", WrapTaskLog(task, zap.Error(err))...)
+		if len(segments) > 0 {
+			err := s.imeta.UpdateTask(task.GetTaskID(), UpdateSegmentIDs(nil))
+			if err != nil {
+				log.Warn("update import task segments failed", WrapTaskLog(task, zap.Error(err))...)
+			}
 		}
 	}
 	err := DropImportTask(task, s.cluster, s.imeta)

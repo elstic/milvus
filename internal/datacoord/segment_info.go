@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/samber/lo"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
@@ -31,9 +32,15 @@ import (
 
 // SegmentsInfo wraps a map, which maintains ID to SegmentInfo relation
 type SegmentsInfo struct {
-	segments     map[UniqueID]*SegmentInfo
-	compactionTo map[UniqueID]UniqueID // map the compact relation, value is the segment which `CompactFrom` contains key.
+	segments         map[UniqueID]*SegmentInfo
+	secondaryIndexes segmentInfoIndexes
+	compactionTo     map[UniqueID]UniqueID // map the compact relation, value is the segment which `CompactFrom` contains key.
 	// A segment can be compacted to only one segment finally in meta.
+}
+
+type segmentInfoIndexes struct {
+	coll2Segments    map[UniqueID]map[UniqueID]*SegmentInfo
+	channel2Segments map[string]map[UniqueID]*SegmentInfo
 }
 
 // SegmentInfo wraps datapb.SegmentInfo and patches some extra info on it
@@ -67,7 +74,11 @@ func NewSegmentInfo(info *datapb.SegmentInfo) *SegmentInfo {
 // note that no mutex is wrapped so external concurrent control is needed
 func NewSegmentsInfo() *SegmentsInfo {
 	return &SegmentsInfo{
-		segments:     make(map[UniqueID]*SegmentInfo),
+		segments: make(map[UniqueID]*SegmentInfo),
+		secondaryIndexes: segmentInfoIndexes{
+			coll2Segments:    make(map[UniqueID]map[UniqueID]*SegmentInfo),
+			channel2Segments: make(map[string]map[UniqueID]*SegmentInfo),
+		},
 		compactionTo: make(map[UniqueID]UniqueID),
 	}
 }
@@ -86,21 +97,62 @@ func (s *SegmentsInfo) GetSegment(segmentID UniqueID) *SegmentInfo {
 // no deep copy applied
 // the logPath in meta is empty
 func (s *SegmentsInfo) GetSegments() []*SegmentInfo {
-	segments := make([]*SegmentInfo, 0, len(s.segments))
-	for _, segment := range s.segments {
-		segments = append(segments, segment)
-	}
-	return segments
+	return lo.Values(s.segments)
 }
 
-func (s *SegmentsInfo) GetSegmentsBySelector(selector SegmentInfoSelector) []*SegmentInfo {
-	var segments []*SegmentInfo
-	for _, segment := range s.segments {
-		if selector(segment) {
-			segments = append(segments, segment)
+func (s *SegmentsInfo) getCandidates(criterion *segmentCriterion) map[UniqueID]*SegmentInfo {
+	if criterion.collectionID > 0 {
+		collSegments, ok := s.secondaryIndexes.coll2Segments[criterion.collectionID]
+		if !ok {
+			return nil
+		}
+
+		// both collection id and channel are filters of criterion
+		if criterion.channel != "" {
+			return lo.OmitBy(collSegments, func(k UniqueID, v *SegmentInfo) bool {
+				return v.InsertChannel != criterion.channel
+			})
+		}
+		return collSegments
+	}
+
+	if criterion.channel != "" {
+		channelSegments, ok := s.secondaryIndexes.channel2Segments[criterion.channel]
+		if !ok {
+			return nil
+		}
+		return channelSegments
+	}
+
+	return s.segments
+}
+
+func (s *SegmentsInfo) GetSegmentsBySelector(filters ...SegmentFilter) []*SegmentInfo {
+	criterion := &segmentCriterion{}
+	for _, filter := range filters {
+		filter.AddFilter(criterion)
+	}
+
+	// apply criterion
+	candidates := s.getCandidates(criterion)
+	var result []*SegmentInfo
+	for _, segment := range candidates {
+		if criterion.Match(segment) {
+			result = append(result, segment)
 		}
 	}
-	return segments
+	return result
+}
+
+func (s *SegmentsInfo) GetRealSegmentsForChannel(channel string) []*SegmentInfo {
+	channelSegments := s.secondaryIndexes.channel2Segments[channel]
+	var result []*SegmentInfo
+	for _, segment := range channelSegments {
+		if !segment.GetIsFake() {
+			result = append(result, segment)
+		}
+	}
+	return result
 }
 
 // GetCompactionTo returns the segment that the provided segment is compacted to.
@@ -125,19 +177,22 @@ func (s *SegmentsInfo) GetCompactionTo(fromSegmentID int64) (*SegmentInfo, bool)
 func (s *SegmentsInfo) DropSegment(segmentID UniqueID) {
 	if segment, ok := s.segments[segmentID]; ok {
 		s.deleteCompactTo(segment)
+		s.removeSecondaryIndex(segment)
 		delete(s.segments, segmentID)
 	}
 }
 
 // SetSegment sets SegmentInfo with segmentID, perform overwrite if already exists
-// set the logPath of segement in meta empty, to save space
+// set the logPath of segment in meta empty, to save space
 // if segment has logPath, make it empty
 func (s *SegmentsInfo) SetSegment(segmentID UniqueID, segment *SegmentInfo) {
 	if segment, ok := s.segments[segmentID]; ok {
 		// Remove old segment compact to relation first.
 		s.deleteCompactTo(segment)
+		s.removeSecondaryIndex(segment)
 	}
 	s.segments[segmentID] = segment
+	s.addSecondaryIndex(segment)
 	s.addCompactTo(segment)
 }
 
@@ -238,6 +293,13 @@ func (s *SegmentInfo) IsStatsLogExists(logID int64) bool {
 	return false
 }
 
+// SetLevel sets level for segment
+func (s *SegmentsInfo) SetLevel(segmentID UniqueID, level datapb.SegmentLevel) {
+	if segment, ok := s.segments[segmentID]; ok {
+		s.segments[segmentID] = segment.ShadowClone(SetLevel(level))
+	}
+}
+
 // Clone deep clone the segment info and return a new instance
 func (s *SegmentInfo) Clone(opts ...SegmentInfoOption) *SegmentInfo {
 	info := proto.Clone(s.SegmentInfo).(*datapb.SegmentInfo)
@@ -272,6 +334,38 @@ func (s *SegmentInfo) ShadowClone(opts ...SegmentInfoOption) *SegmentInfo {
 		opt(cloned)
 	}
 	return cloned
+}
+
+func (s *SegmentsInfo) addSecondaryIndex(segment *SegmentInfo) {
+	collID := segment.GetCollectionID()
+	channel := segment.GetInsertChannel()
+	if _, ok := s.secondaryIndexes.coll2Segments[collID]; !ok {
+		s.secondaryIndexes.coll2Segments[collID] = make(map[UniqueID]*SegmentInfo)
+	}
+	s.secondaryIndexes.coll2Segments[collID][segment.ID] = segment
+
+	if _, ok := s.secondaryIndexes.channel2Segments[channel]; !ok {
+		s.secondaryIndexes.channel2Segments[channel] = make(map[UniqueID]*SegmentInfo)
+	}
+	s.secondaryIndexes.channel2Segments[channel][segment.ID] = segment
+}
+
+func (s *SegmentsInfo) removeSecondaryIndex(segment *SegmentInfo) {
+	collID := segment.GetCollectionID()
+	channel := segment.GetInsertChannel()
+	if segments, ok := s.secondaryIndexes.coll2Segments[collID]; ok {
+		delete(segments, segment.ID)
+		if len(segments) == 0 {
+			delete(s.secondaryIndexes.coll2Segments, collID)
+		}
+	}
+
+	if segments, ok := s.secondaryIndexes.channel2Segments[channel]; ok {
+		delete(segments, segment.ID)
+		if len(segments) == 0 {
+			delete(s.secondaryIndexes.channel2Segments, channel)
+		}
+	}
 }
 
 // addCompactTo adds the compact relation to the segment
@@ -363,24 +457,31 @@ func SetIsCompacting(isCompacting bool) SegmentInfoOption {
 	}
 }
 
+// SetLevel is the option to set level for segment info
+func SetLevel(level datapb.SegmentLevel) SegmentInfoOption {
+	return func(segment *SegmentInfo) {
+		segment.Level = level
+	}
+}
+
 func (s *SegmentInfo) getSegmentSize() int64 {
 	if s.size.Load() <= 0 {
 		var size int64
 		for _, binlogs := range s.GetBinlogs() {
 			for _, l := range binlogs.GetBinlogs() {
-				size += l.GetLogSize()
+				size += l.GetMemorySize()
 			}
 		}
 
 		for _, deltaLogs := range s.GetDeltalogs() {
 			for _, l := range deltaLogs.GetBinlogs() {
-				size += l.GetLogSize()
+				size += l.GetMemorySize()
 			}
 		}
 
 		for _, statsLogs := range s.GetStatslogs() {
 			for _, l := range statsLogs.GetBinlogs() {
-				size += l.GetLogSize()
+				size += l.GetMemorySize()
 			}
 		}
 		if size > 0 {

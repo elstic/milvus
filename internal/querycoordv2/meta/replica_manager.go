@@ -21,12 +21,14 @@ import (
 	"sync"
 
 	"github.com/cockroachdb/errors"
+	"github.com/samber/lo"
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/metastore"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/pkg/log"
 	"github.com/milvus-io/milvus/pkg/util/merr"
+	"github.com/milvus-io/milvus/pkg/util/paramtable"
 	"github.com/milvus-io/milvus/pkg/util/typeutil"
 )
 
@@ -93,12 +95,15 @@ func (m *ReplicaManager) Get(id typeutil.UniqueID) *Replica {
 }
 
 // Spawn spawns N replicas at resource group for given collection in ReplicaManager.
-func (m *ReplicaManager) Spawn(collection int64, replicaNumInRG map[string]int) ([]*Replica, error) {
+func (m *ReplicaManager) Spawn(collection int64, replicaNumInRG map[string]int, channels []string) ([]*Replica, error) {
 	m.rwmutex.Lock()
 	defer m.rwmutex.Unlock()
 	if m.collIDToReplicaIDs[collection] != nil {
 		return nil, fmt.Errorf("replicas of collection %d is already spawned", collection)
 	}
+
+	balancePolicy := paramtable.Get().QueryCoordCfg.Balancer.GetValue()
+	enableChannelExclusiveMode := balancePolicy == ChannelLevelScoreBalancerName
 
 	replicas := make([]*Replica, 0)
 	for rgName, replicaNum := range replicaNumInRG {
@@ -107,10 +112,18 @@ func (m *ReplicaManager) Spawn(collection int64, replicaNumInRG map[string]int) 
 			if err != nil {
 				return nil, err
 			}
+
+			channelExclusiveNodeInfo := make(map[string]*querypb.ChannelNodeInfo)
+			if enableChannelExclusiveMode {
+				for _, channel := range channels {
+					channelExclusiveNodeInfo[channel] = &querypb.ChannelNodeInfo{}
+				}
+			}
 			replicas = append(replicas, newReplica(&querypb.Replica{
-				ID:            id,
-				CollectionID:  collection,
-				ResourceGroup: rgName,
+				ID:               id,
+				CollectionID:     collection,
+				ResourceGroup:    rgName,
+				ChannelNodeInfos: channelExclusiveNodeInfo,
 			}))
 		}
 	}
@@ -182,7 +195,7 @@ func (m *ReplicaManager) TransferReplica(collectionID typeutil.UniqueID, srcRGNa
 	// Node Change will be executed by replica_observer in background.
 	replicas := make([]*Replica, 0, replicaNum)
 	for i := 0; i < replicaNum; i++ {
-		mutableReplica := srcReplicas[i].copyForWrite()
+		mutableReplica := srcReplicas[i].CopyForWrite()
 		mutableReplica.SetResourceGroup(dstRGName)
 		replicas = append(replicas, mutableReplica.IntoReplica())
 	}
@@ -266,7 +279,7 @@ func (m *ReplicaManager) GetByNode(nodeID typeutil.UniqueID) []*Replica {
 
 	replicas := make([]*Replica, 0)
 	for _, replica := range m.replicas {
-		if replica.rwNodes.Contain(nodeID) {
+		if replica.Contains(nodeID) {
 			replicas = append(replicas, replica)
 		}
 	}
@@ -337,12 +350,13 @@ func (m *ReplicaManager) RecoverNodesInCollection(collectionID typeutil.UniqueID
 				// nothing to do.
 				return
 			}
-			mutableReplica := m.replicas[assignment.GetReplicaID()].copyForWrite()
+			mutableReplica := m.replicas[assignment.GetReplicaID()].CopyForWrite()
 			mutableReplica.AddRONode(roNodes...)          // rw -> ro
 			mutableReplica.AddRWNode(recoverableNodes...) // ro -> rw
 			mutableReplica.AddRWNode(incomingNode...)     // unused -> rw
 			log.Info(
 				"new replica recovery found",
+				zap.Int64("replicaID", assignment.GetReplicaID()),
 				zap.Int64s("newRONodes", roNodes),
 				zap.Int64s("roToRWNodes", recoverableNodes),
 				zap.Int64s("newIncomingNodes", incomingNode))
@@ -400,21 +414,13 @@ func (m *ReplicaManager) RemoveNode(replicaID typeutil.UniqueID, nodes ...typeut
 		return merr.WrapErrReplicaNotFound(replicaID)
 	}
 
-	mutableReplica := replica.copyForWrite()
+	mutableReplica := replica.CopyForWrite()
 	mutableReplica.RemoveNode(nodes...) // ro -> unused
 	return m.put(mutableReplica.IntoReplica())
 }
 
 func (m *ReplicaManager) GetResourceGroupByCollection(collection typeutil.UniqueID) typeutil.Set[string] {
-	m.rwmutex.Lock()
-	defer m.rwmutex.Unlock()
-
-	ret := typeutil.NewSet[string]()
-	for _, r := range m.replicas {
-		if r.GetCollectionID() == collection {
-			ret.Insert(r.GetResourceGroup())
-		}
-	}
-
+	replicas := m.GetByCollection(collection)
+	ret := typeutil.NewSet(lo.Map(replicas, func(r *Replica, _ int) string { return r.GetResourceGroup() })...)
 	return ret
 }
