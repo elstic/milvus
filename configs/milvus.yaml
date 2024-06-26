@@ -321,7 +321,7 @@ queryNode:
     knowhereThreadPoolNumRatio: 4 # The number of threads in knowhere's thread pool. If disk is enabled, the pool size will multiply with knowhereThreadPoolNumRatio([1, 32]).
     chunkRows: 128 # The number of vectors in a chunk.
     interimIndex:
-      enableIndex: true # Enable segment build with index to accelerate vector search when segment is in growing or binlog.
+      enableIndex: false # Enable segment build with index to accelerate vector search when segment is in growing or binlog.
       nlist: 128 # temp index nlist, recommend to set sqrt(chunkRows), must smaller than chunkRows/8
       nprobe: 16 # nprobe to search small index, based on your accuracy requirement, must smaller than nlist
       memExpansionRate: 1.15 # extra memory needed by building interim index
@@ -342,10 +342,10 @@ queryNode:
     # 2. If set to "disable" original vector data will only be loaded into the chunk cache during search/query.
     warmup: disable
   mmap:
-    mmapEnabled: false # Enable mmap for loading data
-    growingMmapEnabled: false # Enable mmap for growing segment
+    mmapEnabled: true # Enable mmap for loading data
+    growingMmapEnabled: true # Enable mmap for growing segment
     fixedFileSizeForMmapAlloc: 4 #MB, fixed file size for mmap chunk manager to store chunk data
-    maxDiskUsagePercentageForMmapAlloc: 20 # max percentage of disk usage in memory mapping
+    maxDiskUsagePercentageForMmapAlloc: 50 # max percentage of disk usage in memory mapping
   lazyload:
     enabled: false # Enable lazyload for loading data
     waitTimeout: 30000 # max wait timeout duration in milliseconds before start to do lazyload search and retrieve
